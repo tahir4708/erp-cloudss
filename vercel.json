@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "env": {
+    "DISABLE_BACKTEST_HINT": "1"
+  },
+  "builds": [
+    { "src": "api/index.py", "use": "@vercel/python" },
+    { "src": "frontend/**", "use": "@vercel/static" }
+  ],
+  "routes": [
+    { "src": "/api/(.*)", "dest": "api/index.py" },
+    { "src": "/static/(.*)", "dest": "/frontend/$1" },
+    { "src": "/(.+\\.(js|css|png|jpg|jpeg|svg|ico|webp|json|map))", "dest": "/frontend/$1" },
+    { "src": "/(.*)", "dest": "/frontend/index.html" }
+  ]
+}

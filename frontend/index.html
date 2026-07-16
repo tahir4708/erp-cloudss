@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0c1210" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>AURUM — XAU/USD Signal Desk</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="atmosphere" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">Au</span>
+      <div>
+        <p class="brand-name">AURUM</p>
+        <p class="brand-sub">XAU/USD Signal Desk</p>
+      </div>
+    </div>
+    <p class="live-pill" id="liveStatus">Waiting</p>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Gold · Live chart confluence</p>
+        <h1>AURUM</h1>
+        <p class="lede">
+          Reads XAU/USD structure and momentum, then returns Buy or Sell, entry point,
+          lot size, TP/SL, and win probability.
+        </p>
+        <div class="controls">
+          <label>
+            Instrument
+            <select id="instrument">
+              <option value="XAUUSD" selected>Gold · XAU/USD</option>
+              <option value="USOIL">Oil · USOIL</option>
+              <option value="BTCUSD">Bitcoin · BTC/USD</option>
+            </select>
+          </label>
+          <label>
+            Timeframe
+            <select id="interval">
+              <option value="5m">5m</option>
+              <option value="15m" selected>15m</option>
+              <option value="30m">30m</option>
+              <option value="1h">1h</option>
+              <option value="4h">4h</option>
+              <option value="1d">1D</option>
+            </select>
+          </label>
+          <label>
+            Balance ($)
+            <input id="balance" type="number" min="50" step="50" value="1000" />
+          </label>
+          <label>
+            Risk %
+            <input id="risk" type="number" min="0.5" max="5" step="0.5" value="2" />
+          </label>
+          <button id="analyzeBtn" type="button">Analyze chart</button>
+          <label class="live-toggle">
+            <input id="liveToggle" type="checkbox" />
+            <span>Live</span>
+          </label>
+          <label>
+            Refresh
+            <select id="refreshRate">
+              <option value="1">1s</option>
+              <option value="5">5s</option>
+              <option value="10" selected>10s</option>
+              <option value="30">30s</option>
+              <option value="60">60s</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div class="hero-chart-wrap">
+        <p class="chart-caption" id="chartCaption">Load a signal to paint the chart.</p>
+        <div id="priceChart" aria-label="price chart"></div>
+      </div>
+    </section>
+
+    <section class="signal-board" id="signalBoard" hidden>
+      <article class="signal-core" id="signalCore">
+        <p class="signal-label">1 · Direction</p>
+        <p class="signal-side" id="sideValue">—</p>
+        <p class="signal-entry" id="timeframeValue">—</p>
+      </article>
+
+      <article class="metric">
+        <p class="metric-label">2 · Entry point</p>
+        <p class="metric-value" id="entryValue">—</p>
+        <p class="metric-note">Open price for this signal</p>
+      </article>
+
+      <article class="metric">
+        <p class="metric-label">3 · Lot size</p>
+        <p class="metric-value" id="lotValue">—</p>
+        <p class="metric-note" id="riskNote">Sized from confidence × risk</p>
+      </article>
+
+      <article class="metric">
+        <p class="metric-label">4 · Stop loss</p>
+        <p class="metric-value" id="slValue">—</p>
+        <p class="metric-note" id="slNote">Distance —</p>
+      </article>
+
+      <article class="metric">
+        <p class="metric-label">4 · Take profit</p>
+        <p class="metric-value" id="tpValue">—</p>
+        <p class="metric-note" id="rrNote">Distance — · R:R —</p>
+      </article>
+
+      <article class="metric win">
+        <p class="metric-label">5 · Win probability</p>
+        <p class="metric-value" id="winValue">—</p>
+        <p class="metric-note" id="confNote">Confidence —</p>
+      </article>
+    </section>
+
+    <section class="detail-grid" id="detailGrid" hidden>
+      <article class="reasons">
+        <h2>Why this way</h2>
+        <ul id="reasonList"></ul>
+      </article>
+      <article class="votes">
+        <h2>Indicator votes</h2>
+        <div id="voteList" class="vote-list"></div>
+      </article>
+      <article class="snapshot">
+        <h2>Live snapshot</h2>
+        <dl id="snapList" class="snap-list"></dl>
+        <p class="edge" id="edgeNote"></p>
+      </article>
+    </section>
+
+    <p class="disclaimer" id="disclaimer">
+      Educational tool only — not financial advice. Markets move fast; every signal can fail.
+    </p>
+  </main>
+
+  <div class="toast" id="toast" hidden></div>
+  <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

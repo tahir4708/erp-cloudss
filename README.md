@@ -71,6 +71,17 @@ docker build -t aurum .
 docker run -p 8000:8000 aurum
 ```
 
+## Analysis modes
+
+| Mode | Command / UI | What it uses |
+|------|----------------|--------------|
+| **Indicators** (default) | `--mode indicators` or `/signal` | EMA, MACD, RSI, Stochastic, Bollinger, ADX |
+| **Candle patterns** | `--mode candles` or `/signal_candle` | Engulfing, hammer, doji, stars, inside bar, structure — **no indicators** |
+
+```bash
+python cli.py --mode candles --interval 15m
+```
+
 ## What you get
 
 | Output | Meaning |

@@ -55,6 +55,7 @@ class AnalyzeRequest(BaseModel):
     account_balance: float = Field(default=1000.0, gt=0, description="Account balance in USD")
     risk_percent: float = Field(default=2.0, gt=0, le=5, description="Max risk % per trade")
     instrument: str = Field(default="XAUUSD", description="Instrument key (XAUUSD, USOIL, BTCUSD)")
+    mode: str = Field(default="indicators", pattern="^(indicators|candles)$")
 
 
 @app.get("/api/health")
@@ -78,6 +79,7 @@ def get_signal(
     account_balance: float = Query(default=1000.0, gt=0),
     risk_percent: float = Query(default=2.0, gt=0, le=5),
     instrument: str = Query(default="XAUUSD", pattern=_INSTRUMENT_PATTERN),
+    mode: str = Query(default="indicators", pattern="^(indicators|candles)$"),
 ):
     try:
         signal = analyze_xauusd(
@@ -85,11 +87,13 @@ def get_signal(
             account_balance=account_balance,
             risk_percent=risk_percent,
             instrument=instrument,
+            mode=mode,  # type: ignore[arg-type]
         )
         payload = signal.to_dict()
-        # The backtest hint is a heavier loop; it can be disabled (e.g. on
-        # serverless platforms with short timeouts) via DISABLE_BACKTEST_HINT.
-        if os.getenv("DISABLE_BACKTEST_HINT", "").lower() in ("1", "true", "yes"):
+        if (
+            mode != "indicators"
+            or os.getenv("DISABLE_BACKTEST_HINT", "").lower() in ("1", "true", "yes")
+        ):
             payload["recent_edge"] = None
         else:
             try:
@@ -112,6 +116,7 @@ def post_signal(body: AnalyzeRequest):
         account_balance=body.account_balance,
         risk_percent=body.risk_percent,
         instrument=body.instrument,
+        mode=body.mode,
     )
 
 

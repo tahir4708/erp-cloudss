@@ -57,12 +57,13 @@ def tg_call(token: str, method: str, **params):
     return payload["result"]
 
 
-def format_signal(interval: str, balance: float, risk: float) -> str:
-    s = analyze_xauusd(interval=interval, account_balance=balance, risk_percent=risk)
+def format_signal(interval: str, balance: float, risk: float, mode: str = "indicators") -> str:
+    s = analyze_xauusd(interval=interval, account_balance=balance, risk_percent=risk, mode=mode)  # type: ignore[arg-type]
     d = s.to_dict()
     arrow = {"BUY": "BUY", "SELL": "SELL", "WAIT": "WAIT"}.get(d["side"], d["side"])
+    mode_label = "Candle patterns" if d.get("analysis_mode") == "candles" else "Indicators"
     lines = [
-        f"AURUM · {d['symbol']} · {d['timeframe']}",
+        f"AURUM · {d['symbol']} · {d['timeframe']} · {mode_label}",
         "",
         f"1) Side         : {arrow}",
         f"2) Entry point  : {d['entry']}",
@@ -116,16 +117,24 @@ def handle_updates(
                 token,
                 chat_id,
                 "AURUM XAU/USD signal bot\n\n"
-                "/signal — analyze gold now\n"
+                "/signal — indicator analysis (EMA, RSI, MACD…)\n"
+                "/signal_candle — candle pattern analysis only\n"
                 "/help — this message\n\n"
                 "Educational only — not financial advice.",
             )
         elif cmd == "/signal":
-            send_message(token, chat_id, "Analyzing XAU/USD…")
+            send_message(token, chat_id, "Analyzing XAU/USD (indicators)…")
             try:
-                send_message(token, chat_id, format_signal(interval, balance, risk))
+                send_message(token, chat_id, format_signal(interval, balance, risk, mode="indicators"))
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Signal failed")
+                send_message(token, chat_id, f"Signal error: {exc}")
+        elif cmd == "/signal_candle":
+            send_message(token, chat_id, "Analyzing XAU/USD (candle patterns)…")
+            try:
+                send_message(token, chat_id, format_signal(interval, balance, risk, mode="candles"))
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Candle signal failed")
                 send_message(token, chat_id, f"Signal error: {exc}")
     return offset
 
@@ -160,7 +169,8 @@ def main() -> int:
     send_message(
         token,
         chat_id,
-        "AURUM is online on your phone.\nTap /signal anytime for XAU/USD.",
+        "AURUM is online on your phone.\n"
+        "Tap /signal (indicators) or /signal_candle (patterns).",
     )
     logger.info("Telegram bot running. Open Telegram on your phone and tap /signal")
 

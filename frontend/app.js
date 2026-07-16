@@ -3,6 +3,7 @@ const $ = (id) => document.getElementById(id);
 const els = {
   btn: $("analyzeBtn"),
   instrument: $("instrument"),
+  mode: $("mode"),
   interval: $("interval"),
   balance: $("balance"),
   risk: $("risk"),
@@ -22,6 +23,7 @@ const els = {
   riskNote: $("riskNote"),
   reasons: $("reasonList"),
   votes: $("voteList"),
+  votesTitle: $("votesTitle"),
   snap: $("snapList"),
   edge: $("edgeNote"),
   disclaimer: $("disclaimer"),
@@ -282,7 +284,9 @@ function renderSignal(data) {
 
   els.side.textContent = data.side;
   els.entry.textContent = Number(data.entry).toFixed(2);
-  els.timeframe.textContent = `${data.symbol} · ${data.timeframe}`;
+  els.timeframe.textContent = `${data.symbol} · ${data.timeframe} · ${data.analysis_mode || "indicators"}`;
+  els.votesTitle.textContent =
+    data.analysis_mode === "candles" ? "Pattern votes" : "Indicator votes";
   els.lot.textContent = data.side === "WAIT" ? "0.00" : Number(data.lot_size).toFixed(2);
   els.sl.textContent = Number(data.stop_loss).toFixed(2);
   els.tp.textContent = Number(data.take_profit).toFixed(2);
@@ -348,6 +352,7 @@ async function analyze({ silent = false } = {}) {
 
   const interval = els.interval.value;
   const instrument = els.instrument.value;
+  const mode = els.mode.value;
   const account_balance = Number(els.balance.value) || 1000;
   const risk_percent = Number(els.risk.value) || 2;
 
@@ -361,6 +366,7 @@ async function analyze({ silent = false } = {}) {
     const params = new URLSearchParams({
       interval,
       instrument,
+      mode,
       account_balance: String(account_balance),
       risk_percent: String(risk_percent),
       _ts: String(Date.now()),
@@ -426,6 +432,12 @@ els.refreshRate.addEventListener("change", () => {
 });
 
 els.instrument.addEventListener("change", () => {
+  fitNext = true;
+  if (els.liveToggle.checked) startLive();
+  else analyze();
+});
+
+els.mode.addEventListener("change", () => {
   fitNext = true;
   if (els.liveToggle.checked) startLive();
   else analyze();

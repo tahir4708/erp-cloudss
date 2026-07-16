@@ -1,10 +1,28 @@
-"""Configuration for the XAU/USD signal bot."""
+"""Configuration for the multi-instrument signal bot."""
 
 from pydantic_settings import BaseSettings
 
 
+# Tradable instruments. Each maps a UI key to its Yahoo Finance symbol, a
+# display label, and the CFD contract size (units per 1.00 lot) used for
+# lot sizing / risk math. Gold ≈ 100 oz, WTI oil ≈ 1000 barrels, BTC ≈ 1 coin.
+INSTRUMENTS: dict[str, dict[str, object]] = {
+    "XAUUSD": {"symbol": "GC=F", "display_symbol": "XAU/USD", "contract_size": 100.0},
+    "USOIL": {"symbol": "CL=F", "display_symbol": "USOIL", "contract_size": 1000.0},
+    "BTCUSD": {"symbol": "BTC-USD", "display_symbol": "BTC/USD", "contract_size": 1.0},
+}
+
+DEFAULT_INSTRUMENT = "XAUUSD"
+
+
+def get_instrument(key: str | None) -> dict[str, object]:
+    """Resolve an instrument config by key, falling back to the default."""
+    return INSTRUMENTS.get((key or DEFAULT_INSTRUMENT).upper(), INSTRUMENTS[DEFAULT_INSTRUMENT])
+
+
 class Settings(BaseSettings):
-    # Yahoo Finance symbol for spot gold / XAUUSD proxy
+    # Default Yahoo Finance symbol (spot gold / XAUUSD proxy) — used when no
+    # instrument is specified. Per-request instruments override this.
     symbol: str = "GC=F"
     display_symbol: str = "XAU/USD"
 

@@ -38,6 +38,14 @@
         </p>
         <div class="controls">
           <label>
+            Instrument
+            <select id="instrument">
+              <option value="XAUUSD" selected>Gold · XAU/USD</option>
+              <option value="USOIL">Oil · USOIL</option>
+              <option value="BTCUSD">Bitcoin · BTC/USD</option>
+            </select>
+          </label>
+          <label>
             Timeframe
             <select id="interval">
               <option value="5m">5m</option>
@@ -57,12 +65,26 @@
             <input id="risk" type="number" min="0.5" max="5" step="0.5" value="2" />
           </label>
           <button id="analyzeBtn" type="button">Analyze chart</button>
+          <label class="live-toggle">
+            <input id="liveToggle" type="checkbox" />
+            <span>Live</span>
+          </label>
+          <label>
+            Refresh
+            <select id="refreshRate">
+              <option value="1">1s</option>
+              <option value="5">5s</option>
+              <option value="10" selected>10s</option>
+              <option value="30">30s</option>
+              <option value="60">60s</option>
+            </select>
+          </label>
         </div>
       </div>
 
       <div class="hero-chart-wrap">
-        <canvas id="priceChart" width="900" height="420" aria-label="XAUUSD price chart"></canvas>
-        <p class="chart-caption" id="chartCaption">Load a signal to paint the gold path.</p>
+        <p class="chart-caption" id="chartCaption">Load a signal to paint the chart.</p>
+        <div id="priceChart" aria-label="price chart"></div>
       </div>
     </section>
 
@@ -126,6 +148,7 @@
   </main>
 
   <div class="toast" id="toast" hidden></div>
+  <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

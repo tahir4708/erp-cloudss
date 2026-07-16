@@ -8,7 +8,7 @@ from typing import Any, Literal
 import numpy as np
 import pandas as pd
 
-from backend.config import settings
+from backend.config import get_instrument, settings
 from backend.data_feed import candles_to_list, fetch_ohlcv
 from backend.indicators import enrich, latest_snapshot, safe_nan
 
@@ -207,6 +207,7 @@ def _lot_size(
     confidence: float,
     account_balance: float,
     risk_percent: float,
+    contract_size: float,
 ) -> tuple[float, float]:
     """Lot size scales with confidence and account risk vs SL distance."""
     if side == "WAIT" or entry <= 0:
@@ -222,16 +223,16 @@ def _lot_size(
     risk_pct = risk_percent * conf_factor
     risk_amount = account_balance * (risk_pct / 100.0)
 
-    # For gold CFDs: loss ≈ lot * contract_size * price_move
+    # For CFDs: loss ≈ lot * contract_size * price_move
     # lot = risk_amount / (sl_distance * contract_size)
-    raw_lot = risk_amount / (sl_distance * settings.contract_size)
+    raw_lot = risk_amount / (sl_distance * contract_size)
     lot = _round_lot(raw_lot)
 
     # Extra confidence bump for very strong signals (small)
     if confidence >= settings.high_confidence:
         lot = _round_lot(lot * 1.15)
 
-    actual_risk = lot * settings.contract_size * sl_distance
+    actual_risk = lot * contract_size * sl_distance
     return lot, round(actual_risk, 2)
 
 
@@ -283,12 +284,18 @@ def analyze_xauusd(
     interval: str = "15m",
     account_balance: float | None = None,
     risk_percent: float | None = None,
+    instrument: str | None = None,
 ) -> TradeSignal:
-    """Run full analysis and return a trade signal."""
+    """Run full analysis and return a trade signal for the given instrument."""
     balance = account_balance if account_balance is not None else settings.account_balance
     risk_pct = risk_percent if risk_percent is not None else settings.max_risk_percent
 
-    raw = fetch_ohlcv(interval=interval)
+    inst = get_instrument(instrument)
+    yahoo_symbol = str(inst["symbol"])
+    display_symbol = str(inst["display_symbol"])
+    contract_size = float(inst["contract_size"])
+
+    raw = fetch_ohlcv(interval=interval, symbol=yahoo_symbol)
     df = enrich(raw)
     df = df.dropna()
     if len(df) < 60:
@@ -304,7 +311,9 @@ def analyze_xauusd(
     atr = snap["atr"]
 
     stop_loss, take_profit, rr = _tp_sl(side, entry, atr, snap)
-    lot, risk_amount = _lot_size(side, entry, stop_loss, confidence, balance, risk_pct)
+    lot, risk_amount = _lot_size(
+        side, entry, stop_loss, confidence, balance, risk_pct, contract_size
+    )
 
     if side == "WAIT":
         lot = 0.0
@@ -317,7 +326,7 @@ def analyze_xauusd(
     tp_distance = round(abs(entry - take_profit), 2)
 
     return TradeSignal(
-        symbol=settings.display_symbol,
+        symbol=display_symbol,
         side=side,
         lot_size=lot,
         entry=entry,
@@ -350,10 +359,15 @@ def analyze_xauusd(
     )
 
 
-def quick_backtest_hint(df: pd.DataFrame | None = None, interval: str = "15m") -> dict[str, Any]:
+def quick_backtest_hint(
+    df: pd.DataFrame | None = None,
+    interval: str = "15m",
+    instrument: str | None = None,
+) -> dict[str, Any]:
     """Lightweight recent-window hit-rate hint (not a full backtester)."""
     if df is None:
-        df = enrich(fetch_ohlcv(interval=interval)).dropna()
+        symbol = str(get_instrument(instrument)["symbol"])
+        df = enrich(fetch_ohlcv(interval=interval, symbol=symbol)).dropna()
 
     hits = 0
     total = 0

@@ -1,17 +1,17 @@
 :root {
-  --bg-deep: #0c1210;
-  --bg-mid: #14201b;
-  --ink: #f3efe4;
-  --ink-soft: #b7b09f;
-  --gold: #d4a84b;
-  --gold-bright: #f0c56d;
-  --gold-dim: #8a6a2d;
-  --buy: #3dba7a;
-  --sell: #e25b4c;
-  --wait: #c4b38a;
-  --line: rgba(212, 168, 75, 0.22);
-  --glass: rgba(20, 32, 27, 0.72);
-  --shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+  --bg-deep: #f4f1e9;
+  --bg-mid: #ffffff;
+  --ink: #23201a;
+  --ink-soft: #6b6455;
+  --gold: #b0862f;
+  --gold-bright: #986a15;
+  --gold-dim: #cbb58a;
+  --buy: #1f9d5f;
+  --sell: #d23f2f;
+  --wait: #8a7a4e;
+  --line: rgba(120, 90, 30, 0.22);
+  --glass: rgba(255, 255, 255, 0.82);
+  --shadow: 0 18px 45px rgba(60, 45, 15, 0.12);
   --serif: "Cormorant Garamond", Georgia, serif;
   --sans: "DM Sans", sans-serif;
 }
@@ -39,10 +39,10 @@ body {
   inset: 0;
   z-index: -1;
   background:
-    radial-gradient(ellipse 80% 55% at 15% 10%, rgba(212, 168, 75, 0.18), transparent 55%),
-    radial-gradient(ellipse 60% 45% at 85% 20%, rgba(61, 186, 122, 0.08), transparent 50%),
-    radial-gradient(ellipse 70% 50% at 50% 100%, rgba(226, 91, 76, 0.06), transparent 55%),
-    linear-gradient(165deg, #101815 0%, #0c1210 45%, #15110c 100%);
+    radial-gradient(ellipse 80% 55% at 15% 10%, rgba(212, 168, 75, 0.16), transparent 55%),
+    radial-gradient(ellipse 60% 45% at 85% 20%, rgba(31, 157, 95, 0.06), transparent 50%),
+    radial-gradient(ellipse 70% 50% at 50% 100%, rgba(210, 63, 47, 0.05), transparent 55%),
+    linear-gradient(165deg, #faf7ef 0%, #f4f1e9 45%, #f8f2e4 100%);
 }
 
 .atmosphere::after {
@@ -51,8 +51,8 @@ body {
   inset: 0;
   opacity: 0.08;
   background-image:
-    linear-gradient(rgba(243, 239, 228, 0.08) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(243, 239, 228, 0.08) 1px, transparent 1px);
+    linear-gradient(rgba(60, 45, 15, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(60, 45, 15, 0.05) 1px, transparent 1px);
   background-size: 48px 48px;
   mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
 }
@@ -179,7 +179,7 @@ main {
 .controls button {
   font: inherit;
   border: 1px solid var(--line);
-  background: rgba(12, 18, 16, 0.65);
+  background: #ffffff;
   color: var(--ink);
   padding: 0.7rem 0.75rem;
 }
@@ -208,27 +208,54 @@ main {
   transform: none;
 }
 
+.controls .live-toggle {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.55rem;
+  justify-content: flex-start;
+  padding: 0.7rem 0.75rem;
+  border: 1px solid var(--line);
+  background: #ffffff;
+  color: var(--ink);
+  cursor: pointer;
+  text-transform: uppercase;
+}
+
+.controls .live-toggle input {
+  width: 1.05rem;
+  height: 1.05rem;
+  padding: 0;
+  accent-color: var(--gold);
+  cursor: pointer;
+}
+
 .hero-chart-wrap {
   position: relative;
   min-height: 420px;
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
   background:
-    linear-gradient(180deg, rgba(212, 168, 75, 0.05), transparent 40%),
-    rgba(8, 12, 10, 0.55);
+    linear-gradient(180deg, rgba(212, 168, 75, 0.08), transparent 40%),
+    #ffffff;
   animation: chartIn 1.2s ease 0.15s both;
 }
 
 #priceChart {
   width: 100%;
-  height: auto;
+  height: 460px;
   display: block;
 }
 
 .chart-caption {
   position: absolute;
   left: 1rem;
-  bottom: 0.75rem;
+  top: 0.75rem;
+  z-index: 2;
+  padding: 0.2rem 0.55rem;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  pointer-events: none;
 }
 
 .signal-board {
@@ -389,7 +416,7 @@ main {
   left: 50%;
   bottom: 1.25rem;
   transform: translateX(-50%);
-  background: #1d1710;
+  background: #ffffff;
   border: 1px solid var(--gold-dim);
   color: var(--ink);
   padding: 0.75rem 1rem;

@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: aurum-signal-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      # Pinned deps ship prebuilt wheels for Python 3.12.
+      - key: PYTHON_VERSION
+        value: "3.12.7"

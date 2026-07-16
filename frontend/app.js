@@ -2,6 +2,7 @@ const $ = (id) => document.getElementById(id);
 
 const els = {
   btn: $("analyzeBtn"),
+  instrument: $("instrument"),
   interval: $("interval"),
   balance: $("balance"),
   risk: $("risk"),
@@ -27,10 +28,36 @@ const els = {
   caption: $("chartCaption"),
   toast: $("toast"),
   core: $("signalCore"),
-  canvas: $("priceChart"),
+  chart: $("priceChart"),
+  liveToggle: $("liveToggle"),
+  refreshRate: $("refreshRate"),
 };
 
 let lastSignal = null;
+let liveTimer = null;
+let countdownTimer = null;
+let fetching = false;
+
+let chart = null;
+let candleSeries = null;
+let volumeSeries = null;
+let priceLines = [];
+let fitNext = true;
+
+// Real-time tick feed (free, no API key) via Binance WebSocket.
+//  - BTCUSD -> btcusdt (spot crypto)
+//  - XAUUSD -> paxgusdt (PAX Gold ≈ spot gold; basis-aligned to the chart)
+// USOIL has no free per-second websocket, so it stays on the polling refresh.
+const BINANCE_SYMBOLS = { BTCUSD: "btcusdt", XAUUSD: "paxgusdt" };
+const BINANCE_INTERVALS = {
+  "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
+  "1h": "1h", "4h": "4h", "1d": "1d",
+};
+let ws = null;
+let wsKey = null;
+let lastBarTime = 0;
+let lastChartClose = 0;
+let feedBasis = null; // offset added to raw feed prices to align with the chart
 
 function showToast(message) {
   els.toast.hidden = false;
@@ -41,94 +68,207 @@ function showToast(message) {
   }, 4200);
 }
 
-function drawChart(candles, signal) {
-  const canvas = els.canvas;
-  const ctx = canvas.getContext("2d");
-  const dpr = window.devicePixelRatio || 1;
-  const cssW = canvas.clientWidth || 900;
-  const cssH = 420;
-  canvas.width = Math.floor(cssW * dpr);
-  canvas.height = Math.floor(cssH * dpr);
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, cssW, cssH);
+function toEpoch(iso) {
+  // Backend sends tz-naive UTC timestamps; treat them as UTC.
+  const ms = new Date(`${iso}Z`).getTime();
+  return Math.floor(ms / 1000);
+}
 
+function pricePrecision(candles) {
+  const sample = candles?.[candles.length - 1]?.close ?? 100;
+  if (sample >= 1000) return { precision: 2, minMove: 0.01 };
+  if (sample >= 1) return { precision: 2, minMove: 0.01 };
+  return { precision: 4, minMove: 0.0001 };
+}
+
+function ensureChart() {
+  if (chart) return;
+
+  chart = LightweightCharts.createChart(els.chart, {
+    autoSize: true,
+    layout: {
+      background: { type: "solid", color: "transparent" },
+      textColor: "#4a4436",
+      fontFamily: "DM Sans, sans-serif",
+    },
+    grid: {
+      vertLines: { color: "rgba(60,45,15,0.07)" },
+      horzLines: { color: "rgba(60,45,15,0.07)" },
+    },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    rightPriceScale: { borderColor: "rgba(60,45,15,0.15)" },
+    timeScale: {
+      borderColor: "rgba(60,45,15,0.15)",
+      timeVisible: true,
+      secondsVisible: false,
+    },
+  });
+
+  candleSeries = chart.addCandlestickSeries({
+    upColor: "#3dba7a",
+    downColor: "#e25b4c",
+    borderUpColor: "#3dba7a",
+    borderDownColor: "#e25b4c",
+    wickUpColor: "#3dba7a",
+    wickDownColor: "#e25b4c",
+  });
+
+  volumeSeries = chart.addHistogramSeries({
+    priceFormat: { type: "volume" },
+    priceScaleId: "vol",
+    color: "rgba(212,168,75,0.35)",
+  });
+  chart.priceScale("vol").applyOptions({
+    scaleMargins: { top: 0.82, bottom: 0 },
+  });
+}
+
+function drawChart(candles, signal) {
+  if (typeof LightweightCharts === "undefined") return;
   if (!candles?.length) return;
 
-  const pad = { top: 24, right: 18, bottom: 28, left: 18 };
-  const w = cssW - pad.left - pad.right;
-  const h = cssH - pad.top - pad.bottom;
+  ensureChart();
 
-  let min = Math.min(...candles.map((c) => c.low));
-  let max = Math.max(...candles.map((c) => c.high));
-  if (signal) {
-    min = Math.min(min, signal.stop_loss, signal.take_profit, signal.entry);
-    max = Math.max(max, signal.stop_loss, signal.take_profit, signal.entry);
-  }
-  const span = Math.max(max - min, 1);
-  min -= span * 0.04;
-  max += span * 0.04;
+  candleSeries.applyOptions({ priceFormat: { type: "price", ...pricePrecision(candles) } });
 
-  const xAt = (i) => pad.left + (i / Math.max(candles.length - 1, 1)) * w;
-  const yAt = (price) => pad.top + ((max - price) / (max - min)) * h;
+  const bars = candles.map((c) => ({
+    time: toEpoch(c.time),
+    open: c.open,
+    high: c.high,
+    low: c.low,
+    close: c.close,
+  }));
+  candleSeries.setData(bars);
+  lastBarTime = bars.length ? bars[bars.length - 1].time : 0;
+  lastChartClose = bars.length ? bars[bars.length - 1].close : 0;
 
-  ctx.strokeStyle = "rgba(212,168,75,0.12)";
-  ctx.lineWidth = 1;
-  for (let i = 0; i < 5; i++) {
-    const y = pad.top + (h / 4) * i;
-    ctx.beginPath();
-    ctx.moveTo(pad.left, y);
-    ctx.lineTo(pad.left + w, y);
-    ctx.stroke();
-  }
+  volumeSeries.setData(
+    candles.map((c) => ({
+      time: toEpoch(c.time),
+      value: c.volume || 0,
+      color: c.close >= c.open ? "rgba(61,186,122,0.35)" : "rgba(226,91,76,0.35)",
+    }))
+  );
+
+  priceLines.forEach((line) => candleSeries.removePriceLine(line));
+  priceLines = [];
 
   if (signal && signal.side !== "WAIT") {
     const guides = [
-      { price: signal.take_profit, color: "rgba(61,186,122,0.85)", label: "TP" },
-      { price: signal.entry, color: "rgba(240,197,109,0.9)", label: "ENTRY" },
-      { price: signal.stop_loss, color: "rgba(226,91,76,0.85)", label: "SL" },
+      { price: signal.take_profit, color: "#3dba7a", title: "TP" },
+      { price: signal.entry, color: "#f0c56d", title: "ENTRY" },
+      { price: signal.stop_loss, color: "#e25b4c", title: "SL" },
     ];
     guides.forEach((g) => {
-      const y = yAt(g.price);
-      ctx.strokeStyle = g.color;
-      ctx.setLineDash([5, 5]);
-      ctx.beginPath();
-      ctx.moveTo(pad.left, y);
-      ctx.lineTo(pad.left + w, y);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = g.color;
-      ctx.font = "600 11px DM Sans, sans-serif";
-      ctx.fillText(`${g.label} ${g.price.toFixed(2)}`, pad.left + 6, y - 6);
+      priceLines.push(
+        candleSeries.createPriceLine({
+          price: g.price,
+          color: g.color,
+          lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: g.title,
+        })
+      );
     });
   }
 
-  const candleW = Math.max(2, (w / candles.length) * 0.55);
-  candles.forEach((c, i) => {
-    const x = xAt(i);
-    const bull = c.close >= c.open;
-    ctx.strokeStyle = bull ? "#3dba7a" : "#e25b4c";
-    ctx.fillStyle = bull ? "rgba(61,186,122,0.85)" : "rgba(226,91,76,0.85)";
+  if (fitNext) {
+    chart.timeScale().fitContent();
+    fitNext = false;
+  }
+}
 
-    ctx.beginPath();
-    ctx.moveTo(x, yAt(c.high));
-    ctx.lineTo(x, yAt(c.low));
-    ctx.stroke();
+function fmtPrice(p) {
+  if (p >= 1000) return p.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (p >= 1) return p.toFixed(2);
+  return p.toFixed(4);
+}
 
-    const y1 = yAt(Math.max(c.open, c.close));
-    const y2 = yAt(Math.min(c.open, c.close));
-    ctx.fillRect(x - candleW / 2, y1, candleW, Math.max(y2 - y1, 1));
-  });
+function stopRealtime() {
+  if (ws) {
+    try {
+      ws.onclose = null;
+      ws.close();
+    } catch (_) {}
+  }
+  ws = null;
+  wsKey = null;
+}
 
-  ctx.beginPath();
-  candles.forEach((c, i) => {
-    const x = xAt(i);
-    const y = yAt(c.close);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-  ctx.strokeStyle = "rgba(240,197,109,0.55)";
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
+function connectRealtime() {
+  const instrument = els.instrument.value;
+  const interval = els.interval.value;
+  const symbol = BINANCE_SYMBOLS[instrument];
+  const binInterval = BINANCE_INTERVALS[interval];
+
+  // No free per-second feed for this instrument/timeframe → polling only.
+  if (!symbol || !binInterval) {
+    stopRealtime();
+    return;
+  }
+
+  const desiredKey = `${symbol}@${binInterval}`;
+  if (desiredKey === wsKey && ws && ws.readyState <= 1) return; // already connected
+
+  stopRealtime();
+  wsKey = desiredKey;
+  feedBasis = null; // recomputed on first tick to align feed with the chart
+
+  const url = `wss://stream.binance.com:9443/ws/${symbol}@kline_${binInterval}`;
+  let socket;
+  try {
+    socket = new WebSocket(url);
+  } catch (_) {
+    return;
+  }
+  ws = socket;
+
+  socket.onmessage = (event) => {
+    if (socket !== ws || !candleSeries) return;
+    let msg;
+    try {
+      msg = JSON.parse(event.data);
+    } catch (_) {
+      return;
+    }
+    const k = msg.k;
+    if (!k) return;
+
+    const time = Math.floor(k.t / 1000);
+    if (time < lastBarTime) return; // never rewrite history
+
+    // Align the feed to the chart's price scale (e.g. PAX Gold spot vs gold
+    // futures, or Binance vs Yahoo). Basis is fixed once at first tick.
+    if (feedBasis === null) {
+      feedBasis = lastChartClose ? lastChartClose - +k.c : 0;
+    }
+
+    const open = +k.o + feedBasis;
+    const high = +k.h + feedBasis;
+    const low = +k.l + feedBasis;
+    const close = +k.c + feedBasis;
+
+    candleSeries.update({ time, open, high, low, close });
+    volumeSeries.update({
+      time,
+      value: +k.v,
+      color: close >= open ? "rgba(31,157,95,0.35)" : "rgba(210,63,47,0.35)",
+    });
+    lastBarTime = Math.max(lastBarTime, time);
+
+    els.caption.textContent = `${lastSignal?.symbol || els.instrument.value} · ${fmtPrice(close)} · live`;
+  };
+
+  socket.onclose = () => {
+    // Reconnect if this feed is still the desired one.
+    if (socket === ws) {
+      ws = null;
+      setTimeout(() => {
+        if (wsKey === desiredKey) connectRealtime();
+      }, 2000);
+    }
+  };
 }
 
 function renderSignal(data) {
@@ -192,28 +332,40 @@ function renderSignal(data) {
   }
 
   els.disclaimer.textContent = data.disclaimer;
-  els.caption.textContent = `${data.symbol} · last ${data.candles?.length || 0} candles · ATR ${Number(data.atr).toFixed(2)}`;
+  const stamp = new Date().toLocaleTimeString();
+  const liveTag = els.liveToggle?.checked ? ` · live · updated ${stamp}` : "";
+  els.caption.textContent = `${data.symbol} · last ${data.candles?.length || 0} candles · ATR ${Number(data.atr).toFixed(2)}${liveTag}`;
   els.live.textContent = data.side === "WAIT" ? "Stand by" : "Signal live";
 
   drawChart(data.candles, data);
+  connectRealtime();
 }
 
-async function analyze() {
+async function analyze({ silent = false } = {}) {
+  // Prevent overlapping requests from stacking (matters at 1s refresh).
+  if (fetching) return;
+  fetching = true;
+
   const interval = els.interval.value;
+  const instrument = els.instrument.value;
   const account_balance = Number(els.balance.value) || 1000;
   const risk_percent = Number(els.risk.value) || 2;
 
-  els.btn.disabled = true;
-  els.btn.textContent = "Reading chart…";
-  els.live.textContent = "Analyzing";
+  if (!silent) {
+    els.btn.disabled = true;
+    els.btn.textContent = "Reading chart…";
+    els.live.textContent = "Analyzing";
+  }
 
   try {
     const params = new URLSearchParams({
       interval,
+      instrument,
       account_balance: String(account_balance),
       risk_percent: String(risk_percent),
+      _ts: String(Date.now()),
     });
-    const res = await fetch(`/api/signal?${params.toString()}`);
+    const res = await fetch(`/api/signal?${params.toString()}`, { cache: "no-store" });
     const data = await res.json();
     if (!res.ok) {
       throw new Error(data.detail || "Signal request failed");
@@ -221,17 +373,68 @@ async function analyze() {
     renderSignal(data);
   } catch (err) {
     console.error(err);
-    showToast(err.message || "Could not fetch signal");
-    els.live.textContent = "Error";
+    if (!silent) showToast(err.message || "Could not fetch signal");
+    els.live.textContent = silent ? "Live · retrying" : "Error";
   } finally {
-    els.btn.disabled = false;
-    els.btn.textContent = "Analyze chart";
+    fetching = false;
+    if (!silent) {
+      els.btn.disabled = false;
+      els.btn.textContent = "Analyze chart";
+    }
   }
 }
 
-els.btn.addEventListener("click", analyze);
-window.addEventListener("resize", () => {
-  if (lastSignal) drawChart(lastSignal.candles, lastSignal);
+function stopLive() {
+  clearInterval(liveTimer);
+  clearInterval(countdownTimer);
+  liveTimer = null;
+  countdownTimer = null;
+}
+
+function startLive() {
+  stopLive();
+  const seconds = Number(els.refreshRate.value) || 30;
+  let remaining = seconds;
+
+  countdownTimer = setInterval(() => {
+    remaining -= 1;
+    if (remaining >= 0 && els.liveToggle.checked) {
+      els.live.textContent = `Live · next ${remaining}s`;
+    }
+  }, 1000);
+
+  liveTimer = setInterval(async () => {
+    await analyze({ silent: true });
+    remaining = Number(els.refreshRate.value) || 30;
+  }, seconds * 1000);
+
+  analyze({ silent: true });
+}
+
+els.btn.addEventListener("click", () => analyze());
+
+els.liveToggle.addEventListener("change", () => {
+  if (els.liveToggle.checked) startLive();
+  else {
+    stopLive();
+    els.live.textContent = lastSignal?.side === "WAIT" ? "Stand by" : "Signal live";
+  }
+});
+
+els.refreshRate.addEventListener("change", () => {
+  if (els.liveToggle.checked) startLive();
+});
+
+els.instrument.addEventListener("change", () => {
+  fitNext = true;
+  if (els.liveToggle.checked) startLive();
+  else analyze();
+});
+
+els.interval.addEventListener("change", () => {
+  fitNext = true;
+  if (els.liveToggle.checked) startLive();
+  else analyze();
 });
 
 analyze();

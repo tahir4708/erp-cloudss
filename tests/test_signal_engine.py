@@ -36,7 +36,10 @@ def test_bullish_votes_prefer_buy():
     df = enrich(_synthetic_ohlcv(trend=0.8)).dropna()
     snap = latest_snapshot(df)
     votes = _votes(snap)
-    side, confidence, win_prob, reasons = _score(votes)
+    side, confidence, win_prob, reasons = _score(
+        votes,
+        wait_msg="Indicators are mixed — no high-conviction setup right now",
+    )
     assert side in {"BUY", "SELL", "WAIT"}
     assert 48 <= win_prob <= 88
     assert 50 <= confidence <= 88

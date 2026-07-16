@@ -8,11 +8,13 @@ from typing import Any, Literal
 import numpy as np
 import pandas as pd
 
+from backend.candle_patterns import CandleVote, candle_snapshot, candle_votes, pattern_snapshot
 from backend.config import settings
 from backend.data_feed import candles_to_list, fetch_ohlcv
 from backend.indicators import enrich, latest_snapshot, safe_nan
 
 Side = Literal["BUY", "SELL", "WAIT"]
+AnalysisMode = Literal["indicators", "candles"]
 
 
 @dataclass
@@ -38,6 +40,7 @@ class TradeSignal:
     risk_reward: float
     atr: float
     timeframe: str
+    analysis_mode: str = "indicators"
     reasons: list[str] = field(default_factory=list)
     indicator_votes: list[dict[str, Any]] = field(default_factory=list)
     account_balance: float = 1000.0
@@ -153,7 +156,7 @@ def _votes(snap: dict) -> list[Vote]:
     return votes
 
 
-def _score(votes: list[Vote]) -> tuple[Side, float, float, list[str]]:
+def _score(votes: list[Vote] | list[CandleVote], *, wait_msg: str) -> tuple[Side, float, float, list[str]]:
     buy = sum(v.weight for v in votes if v.side == "BUY")
     sell = sum(v.weight for v in votes if v.side == "SELL")
     total = buy + sell + sum(v.weight for v in votes if v.side == "NEUTRAL")
@@ -182,7 +185,7 @@ def _score(votes: list[Vote]) -> tuple[Side, float, float, list[str]]:
     if side == "WAIT" or confidence < settings.min_confidence_to_trade:
         side = "WAIT"
         reasons = [v.reason for v in votes if v.side == "NEUTRAL"][:4]
-        reasons.insert(0, "Indicators are mixed — no high-conviction setup right now")
+        reasons.insert(0, wait_msg)
         return side, confidence, win_probability, reasons
 
     reasons = [v.reason for v in votes if v.side == side]
@@ -283,8 +286,20 @@ def analyze_xauusd(
     interval: str = "15m",
     account_balance: float | None = None,
     risk_percent: float | None = None,
+    mode: AnalysisMode = "indicators",
 ) -> TradeSignal:
     """Run full analysis and return a trade signal."""
+    if mode == "candles":
+        return _analyze_candles(interval, account_balance, risk_percent)
+    return _analyze_indicators(interval, account_balance, risk_percent)
+
+
+def _analyze_indicators(
+    interval: str,
+    account_balance: float | None,
+    risk_percent: float | None,
+) -> TradeSignal:
+    """Indicator-based confluence analysis."""
     balance = account_balance if account_balance is not None else settings.account_balance
     risk_pct = risk_percent if risk_percent is not None else settings.max_risk_percent
 
@@ -299,7 +314,10 @@ def analyze_xauusd(
         snap[key] = safe_nan(float(val) if val is not None else 0.0)
 
     votes = _votes(snap)
-    side, confidence, win_prob, reasons = _score(votes)
+    side, confidence, win_prob, reasons = _score(
+        votes,
+        wait_msg="Indicators are mixed — no high-conviction setup right now",
+    )
     entry = round(snap["price"], 2)
     atr = snap["atr"]
 
@@ -330,6 +348,7 @@ def analyze_xauusd(
         risk_reward=rr,
         atr=round(atr, 2),
         timeframe=interval,
+        analysis_mode="indicators",
         reasons=reasons,
         indicator_votes=[asdict(v) for v in votes],
         account_balance=balance,
@@ -350,6 +369,71 @@ def analyze_xauusd(
     )
 
 
+def _analyze_candles(
+    interval: str,
+    account_balance: float | None,
+    risk_percent: float | None,
+) -> TradeSignal:
+    """Pure candlestick / price-action analysis (no RSI, MACD, EMA, etc.)."""
+    balance = account_balance if account_balance is not None else settings.account_balance
+    risk_pct = risk_percent if risk_percent is not None else settings.max_risk_percent
+
+    raw = fetch_ohlcv(interval=interval)
+    df = raw.dropna()
+    if len(df) < 30:
+        raise RuntimeError("Not enough candle data to analyze. Try a higher timeframe.")
+
+    pa_snap = candle_snapshot(df)
+    votes = candle_votes(df)
+    side, confidence, win_prob, reasons = _score(
+        votes,
+        wait_msg="Candle patterns are mixed — no high-conviction setup right now",
+    )
+    entry = round(pa_snap["price"], 2)
+    avg_rng = pa_snap["avg_range"]
+
+    tp_snap = {
+        "swing_high": pa_snap["swing_high"],
+        "swing_low": pa_snap["swing_low"],
+    }
+    stop_loss, take_profit, rr = _tp_sl(side, entry, avg_rng, tp_snap)
+    lot, risk_amount = _lot_size(side, entry, stop_loss, confidence, balance, risk_pct)
+
+    if side == "WAIT":
+        lot = 0.0
+        risk_amount = 0.0
+        stop_loss = round(entry - avg_rng * settings.sl_atr_mult, 2)
+        take_profit = round(entry + avg_rng * settings.tp_atr_mult, 2)
+        rr = round(abs(take_profit - entry) / max(abs(entry - stop_loss), 1e-9), 2)
+
+    sl_distance = round(abs(entry - stop_loss), 2)
+    tp_distance = round(abs(entry - take_profit), 2)
+    pat = pattern_snapshot(df)
+
+    return TradeSignal(
+        symbol=settings.display_symbol,
+        side=side,
+        lot_size=lot,
+        entry=entry,
+        stop_loss=stop_loss,
+        take_profit=take_profit,
+        sl_distance=sl_distance,
+        tp_distance=tp_distance,
+        win_probability=round(win_prob, 1),
+        confidence=round(confidence, 1),
+        risk_reward=rr,
+        atr=round(avg_rng, 2),
+        timeframe=interval,
+        analysis_mode="candles",
+        reasons=reasons,
+        indicator_votes=[asdict(v) for v in votes],
+        account_balance=balance,
+        risk_amount=risk_amount,
+        candles=candles_to_list(df),
+        snapshot=pat,
+    )
+
+
 def quick_backtest_hint(df: pd.DataFrame | None = None, interval: str = "15m") -> dict[str, Any]:
     """Lightweight recent-window hit-rate hint (not a full backtester)."""
     if df is None:
@@ -362,7 +446,10 @@ def quick_backtest_hint(df: pd.DataFrame | None = None, interval: str = "15m") -
         snap = latest_snapshot(window)
         for key, val in list(snap.items()):
             snap[key] = safe_nan(float(val) if val is not None else 0.0)
-        side, conf, _, _ = _score(_votes(snap))
+        side, conf, _, _ = _score(
+            _votes(snap),
+            wait_msg="Indicators are mixed — no high-conviction setup right now",
+        )
         if side == "WAIT" or conf < settings.min_confidence_to_trade:
             continue
         entry = float(window.iloc[-1]["close"])

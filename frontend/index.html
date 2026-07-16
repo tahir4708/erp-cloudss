@@ -38,6 +38,13 @@
         </p>
         <div class="controls">
           <label>
+            Analysis
+            <select id="mode">
+              <option value="indicators">Indicators (EMA, RSI, MACD…)</option>
+              <option value="candles">Candle patterns only</option>
+            </select>
+          </label>
+          <label>
             Timeframe
             <select id="interval">
               <option value="5m">5m</option>
@@ -110,7 +117,7 @@
         <ul id="reasonList"></ul>
       </article>
       <article class="votes">
-        <h2>Indicator votes</h2>
+        <h2 id="votesTitle">Indicator votes</h2>
         <div id="voteList" class="vote-list"></div>
       </article>
       <article class="snapshot">

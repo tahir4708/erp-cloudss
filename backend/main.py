@@ -39,6 +39,7 @@ class AnalyzeRequest(BaseModel):
     interval: str = Field(default="15m", description="Candle timeframe")
     account_balance: float = Field(default=1000.0, gt=0, description="Account balance in USD")
     risk_percent: float = Field(default=2.0, gt=0, le=5, description="Max risk % per trade")
+    mode: str = Field(default="indicators", pattern="^(indicators|candles)$")
 
 
 @app.get("/api/health")
@@ -51,16 +52,21 @@ def get_signal(
     interval: str = Query(default="15m", pattern="^(1m|5m|15m|30m|1h|4h|1d)$"),
     account_balance: float = Query(default=1000.0, gt=0),
     risk_percent: float = Query(default=2.0, gt=0, le=5),
+    mode: str = Query(default="indicators", pattern="^(indicators|candles)$"),
 ):
     try:
         signal = analyze_xauusd(
             interval=interval,
             account_balance=account_balance,
             risk_percent=risk_percent,
+            mode=mode,  # type: ignore[arg-type]
         )
         payload = signal.to_dict()
         try:
-            payload["recent_edge"] = quick_backtest_hint(interval=interval)
+            if mode == "indicators":
+                payload["recent_edge"] = quick_backtest_hint(interval=interval)
+            else:
+                payload["recent_edge"] = None
         except Exception as exc:  # noqa: BLE001
             logger.warning("Backtest hint failed: %s", exc)
             payload["recent_edge"] = None
@@ -76,6 +82,7 @@ def post_signal(body: AnalyzeRequest):
         interval=body.interval,
         account_balance=body.account_balance,
         risk_percent=body.risk_percent,
+        mode=body.mode,
     )
 
 

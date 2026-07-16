@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AURUM — XAU/USD Signal Desk</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="atmosphere" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">Au</span>
+      <div>
+        <p class="brand-name">AURUM</p>
+        <p class="brand-sub">XAU/USD Signal Desk</p>
+      </div>
+    </div>
+    <p class="live-pill" id="liveStatus">Waiting</p>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Gold · Live chart confluence</p>
+        <h1>AURUM</h1>
+        <p class="lede">
+          Reads XAU/USD structure and momentum, then returns a clear Buy or Sell path
+          with lot size, TP/SL, and win probability.
+        </p>
+        <div class="controls">
+          <label>
+            Timeframe
+            <select id="interval">
+              <option value="5m">5m</option>
+              <option value="15m" selected>15m</option>
+              <option value="30m">30m</option>
+              <option value="1h">1h</option>
+              <option value="4h">4h</option>
+              <option value="1d">1D</option>
+            </select>
+          </label>
+          <label>
+            Balance ($)
+            <input id="balance" type="number" min="50" step="50" value="1000" />
+          </label>
+          <label>
+            Risk %
+            <input id="risk" type="number" min="0.5" max="5" step="0.5" value="2" />
+          </label>
+          <button id="analyzeBtn" type="button">Analyze chart</button>
+        </div>
+      </div>
+
+      <div class="hero-chart-wrap">
+        <canvas id="priceChart" width="900" height="420" aria-label="XAUUSD price chart"></canvas>
+        <p class="chart-caption" id="chartCaption">Load a signal to paint the gold path.</p>
+      </div>
+    </section>
+
+    <section class="signal-board" id="signalBoard" hidden>
+      <article class="signal-core" id="signalCore">
+        <p class="signal-label">Direction</p>
+        <p class="signal-side" id="sideValue">—</p>
+        <p class="signal-entry" id="entryValue">Entry —</p>
+      </article>
+
+      <article class="metric">
+        <p class="metric-label">Lot size</p>
+        <p class="metric-value" id="lotValue">—</p>
+        <p class="metric-note" id="riskNote">Sized from confidence × risk</p>
+      </article>
+
+      <article class="metric">
+        <p class="metric-label">Stop loss</p>
+        <p class="metric-value" id="slValue">—</p>
+        <p class="metric-note">ATR + structure aware</p>
+      </article>
+
+      <article class="metric">
+        <p class="metric-label">Take profit</p>
+        <p class="metric-value" id="tpValue">—</p>
+        <p class="metric-note" id="rrNote">R:R —</p>
+      </article>
+
+      <article class="metric win">
+        <p class="metric-label">Win probability</p>
+        <p class="metric-value" id="winValue">—</p>
+        <p class="metric-note" id="confNote">Confidence —</p>
+      </article>
+    </section>
+
+    <section class="detail-grid" id="detailGrid" hidden>
+      <article class="reasons">
+        <h2>Why this way</h2>
+        <ul id="reasonList"></ul>
+      </article>
+      <article class="votes">
+        <h2>Indicator votes</h2>
+        <div id="voteList" class="vote-list"></div>
+      </article>
+      <article class="snapshot">
+        <h2>Live snapshot</h2>
+        <dl id="snapList" class="snap-list"></dl>
+        <p class="edge" id="edgeNote"></p>
+      </article>
+    </section>
+
+    <p class="disclaimer" id="disclaimer">
+      Educational tool only — not financial advice. Markets move fast; every signal can fail.
+    </p>
+  </main>
+
+  <div class="toast" id="toast" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,456 @@
+:root {
+  --bg-deep: #0c1210;
+  --bg-mid: #14201b;
+  --ink: #f3efe4;
+  --ink-soft: #b7b09f;
+  --gold: #d4a84b;
+  --gold-bright: #f0c56d;
+  --gold-dim: #8a6a2d;
+  --buy: #3dba7a;
+  --sell: #e25b4c;
+  --wait: #c4b38a;
+  --line: rgba(212, 168, 75, 0.22);
+  --glass: rgba(20, 32, 27, 0.72);
+  --shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+  --serif: "Cormorant Garamond", Georgia, serif;
+  --sans: "DM Sans", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  color: var(--ink);
+  font-family: var(--sans);
+  background: var(--bg-deep);
+}
+
+body {
+  position: relative;
+  overflow-x: hidden;
+}
+
+.atmosphere {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(ellipse 80% 55% at 15% 10%, rgba(212, 168, 75, 0.18), transparent 55%),
+    radial-gradient(ellipse 60% 45% at 85% 20%, rgba(61, 186, 122, 0.08), transparent 50%),
+    radial-gradient(ellipse 70% 50% at 50% 100%, rgba(226, 91, 76, 0.06), transparent 55%),
+    linear-gradient(165deg, #101815 0%, #0c1210 45%, #15110c 100%);
+}
+
+.atmosphere::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: 0.08;
+  background-image:
+    linear-gradient(rgba(243, 239, 228, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(243, 239, 228, 0.08) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1.25rem 4vw 0;
+}
+
+.brand {
+  display: flex;
+  gap: 0.85rem;
+  align-items: center;
+}
+
+.brand-mark {
+  width: 2.6rem;
+  height: 2.6rem;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--gold);
+  color: var(--gold-bright);
+  font-family: var(--serif);
+  font-size: 1.25rem;
+  font-weight: 700;
+  animation: pulseMark 3.2s ease-in-out infinite;
+}
+
+.brand-name {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: 1.35rem;
+  letter-spacing: 0.18em;
+  color: var(--gold-bright);
+}
+
+.brand-sub,
+.eyebrow,
+.metric-label,
+.signal-label,
+.chart-caption,
+.metric-note,
+.disclaimer,
+.edge {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+  letter-spacing: 0.04em;
+}
+
+.live-pill {
+  margin: 0;
+  padding: 0.35rem 0.8rem;
+  border: 1px solid var(--line);
+  color: var(--gold);
+  font-size: 0.75rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+main {
+  width: min(1180px, 92vw);
+  margin: 0 auto;
+  padding: 1.5rem 0 3.5rem;
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: 1.05fr 1.2fr;
+  gap: 2rem;
+  align-items: end;
+  min-height: calc(100vh - 6rem);
+  padding-bottom: 1.5rem;
+}
+
+.hero-copy h1 {
+  margin: 0.2rem 0 0.6rem;
+  font-family: var(--serif);
+  font-size: clamp(4.5rem, 10vw, 7.5rem);
+  font-weight: 600;
+  line-height: 0.9;
+  letter-spacing: 0.04em;
+  color: var(--gold-bright);
+  text-shadow: 0 0 40px rgba(212, 168, 75, 0.18);
+  animation: brandRise 1.1s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  animation: fadeUp 0.8s ease both;
+}
+
+.lede {
+  max-width: 34ch;
+  margin: 0 0 1.6rem;
+  font-size: 1.05rem;
+  line-height: 1.55;
+  color: var(--ink-soft);
+  animation: fadeUp 1s ease 0.1s both;
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  animation: fadeUp 1.1s ease 0.18s both;
+}
+
+.controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.controls input,
+.controls select,
+.controls button {
+  font: inherit;
+  border: 1px solid var(--line);
+  background: rgba(12, 18, 16, 0.65);
+  color: var(--ink);
+  padding: 0.7rem 0.75rem;
+}
+
+.controls button {
+  grid-column: 1 / -1;
+  margin-top: 0.35rem;
+  border-color: var(--gold);
+  background: linear-gradient(135deg, #b8882f, #d4a84b 45%, #f0c56d);
+  color: #1a1408;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: transform 0.2s ease, filter 0.2s ease;
+}
+
+.controls button:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.05);
+}
+
+.controls button:disabled {
+  opacity: 0.65;
+  cursor: wait;
+  transform: none;
+}
+
+.hero-chart-wrap {
+  position: relative;
+  min-height: 420px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background:
+    linear-gradient(180deg, rgba(212, 168, 75, 0.05), transparent 40%),
+    rgba(8, 12, 10, 0.55);
+  animation: chartIn 1.2s ease 0.15s both;
+}
+
+#priceChart {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.chart-caption {
+  position: absolute;
+  left: 1rem;
+  bottom: 0.75rem;
+}
+
+.signal-board {
+  display: grid;
+  grid-template-columns: 1.3fr repeat(4, 1fr);
+  gap: 0.85rem;
+  margin-top: 0.5rem;
+}
+
+.signal-core,
+.metric,
+.reasons,
+.votes,
+.snapshot {
+  background: var(--glass);
+  border: 1px solid var(--line);
+  padding: 1.1rem 1.15rem;
+  box-shadow: var(--shadow);
+}
+
+.signal-core {
+  position: relative;
+  overflow: hidden;
+}
+
+.signal-core::before {
+  content: "";
+  position: absolute;
+  inset: auto -20% -40% -20%;
+  height: 70%;
+  background: radial-gradient(circle, rgba(212, 168, 75, 0.18), transparent 65%);
+  pointer-events: none;
+}
+
+.signal-side {
+  margin: 0.2rem 0;
+  font-family: var(--serif);
+  font-size: clamp(2.8rem, 5vw, 3.8rem);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1;
+}
+
+.signal-core.buy .signal-side { color: var(--buy); }
+.signal-core.sell .signal-side { color: var(--sell); }
+.signal-core.wait .signal-side { color: var(--wait); }
+
+.signal-entry {
+  margin: 0.4rem 0 0;
+  color: var(--ink-soft);
+  font-size: 0.95rem;
+}
+
+.metric-value {
+  margin: 0.25rem 0;
+  font-family: var(--serif);
+  font-size: 2rem;
+  font-weight: 600;
+  color: var(--gold-bright);
+}
+
+.metric.win .metric-value {
+  color: var(--ink);
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: 1.1fr 1.1fr 0.9fr;
+  gap: 0.85rem;
+  margin-top: 0.85rem;
+}
+
+.detail-grid h2 {
+  margin: 0 0 0.85rem;
+  font-family: var(--serif);
+  font-size: 1.55rem;
+  font-weight: 600;
+  color: var(--gold-bright);
+}
+
+.reasons ul {
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--ink-soft);
+  line-height: 1.55;
+}
+
+.reasons li + li {
+  margin-top: 0.45rem;
+}
+
+.vote-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.vote {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.35rem 0.75rem;
+  padding: 0.45rem 0;
+  border-bottom: 1px solid rgba(212, 168, 75, 0.12);
+  font-size: 0.9rem;
+}
+
+.vote span.side {
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+.vote span.side.BUY { color: var(--buy); }
+.vote span.side.SELL { color: var(--sell); }
+.vote span.side.NEUTRAL { color: var(--wait); }
+
+.vote p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+}
+
+.snap-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.55rem 1rem;
+  margin: 0;
+}
+
+.snap-list dt {
+  margin: 0;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.snap-list dd {
+  margin: 0.15rem 0 0;
+  font-family: var(--serif);
+  font-size: 1.25rem;
+  color: var(--ink);
+}
+
+.edge {
+  margin-top: 1rem;
+  line-height: 1.45;
+}
+
+.disclaimer {
+  margin-top: 1.5rem;
+  max-width: 70ch;
+  line-height: 1.5;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 1.25rem;
+  transform: translateX(-50%);
+  background: #1d1710;
+  border: 1px solid var(--gold-dim);
+  color: var(--ink);
+  padding: 0.75rem 1rem;
+  max-width: min(90vw, 420px);
+  box-shadow: var(--shadow);
+  z-index: 20;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+@keyframes brandRise {
+  from { opacity: 0; transform: translateY(18px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes chartIn {
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes pulseMark {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(212, 168, 75, 0.0); }
+  50% { box-shadow: 0 0 0 8px rgba(212, 168, 75, 0.08); }
+}
+
+@media (max-width: 960px) {
+  .hero {
+    grid-template-columns: 1fr;
+    min-height: auto;
+    gap: 1.25rem;
+  }
+
+  .signal-board,
+  .detail-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .signal-core {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 640px) {
+  .controls {
+    grid-template-columns: 1fr;
+  }
+
+  .signal-board,
+  .detail-grid,
+  .snap-list {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-copy h1 {
+    font-size: 4.2rem;
+  }
+}

@@ -233,7 +233,7 @@ main {
 
 .signal-board {
   display: grid;
-  grid-template-columns: 1.3fr repeat(4, 1fr);
+  grid-template-columns: 1.2fr repeat(5, 1fr);
   gap: 0.85rem;
   margin-top: 0.5rem;
 }

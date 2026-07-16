@@ -10,6 +10,7 @@ const els = {
   detail: $("detailGrid"),
   side: $("sideValue"),
   entry: $("entryValue"),
+  timeframe: $("timeframeValue"),
   lot: $("lotValue"),
   sl: $("slValue"),
   tp: $("tpValue"),
@@ -140,7 +141,8 @@ function renderSignal(data) {
   els.core.classList.add(sideClass);
 
   els.side.textContent = data.side;
-  els.entry.textContent = `Entry ${Number(data.entry).toFixed(2)} · ${data.timeframe}`;
+  els.entry.textContent = Number(data.entry).toFixed(2);
+  els.timeframe.textContent = `${data.symbol} · ${data.timeframe}`;
   els.lot.textContent = data.side === "WAIT" ? "0.00" : Number(data.lot_size).toFixed(2);
   els.sl.textContent = Number(data.stop_loss).toFixed(2);
   els.tp.textContent = Number(data.take_profit).toFixed(2);

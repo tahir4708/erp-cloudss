@@ -3,9 +3,10 @@
 Educational chart-analysis bot for **XAU/USD (Gold)**. It reads live market candles, scores multiple technical indicators, and returns a clear trade suggestion:
 
 1. **Buy / Sell / Wait**
-2. **Lot size** (scales with confidence and your risk %)
-3. **Take Profit & Stop Loss** (ATR + structure)
-4. **Win probability %** (confluence-based — not a guarantee)
+2. **Entry point** (price to open the trade)
+3. **Lot size** (scales with confidence and your risk %)
+4. **Take Profit & Stop Loss** (ATR + structure)
+5. **Win probability %** (confluence-based — not a guarantee)
 
 > **Disclaimer:** Signals are for education and decision support only. No signal is 100% accurate. This is not financial advice. Trade at your own risk.
 
@@ -75,6 +76,7 @@ docker run -p 8000:8000 aurum
 | Output | Meaning |
 |--------|---------|
 | Side | `BUY`, `SELL`, or `WAIT` when confluence is weak |
+| Entry point | Suggested open price for the trade (current market price) |
 | Lot size | Position size from account balance, risk %, SL distance, and confidence |
 | TP / SL | ATR-based targets (TP always farther than SL); nearby structure can nudge SL, but never blow it out past 2×ATR |
 | Win % | Estimated probability from indicator agreement (capped realistically) |

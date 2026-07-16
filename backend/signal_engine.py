@@ -31,6 +31,8 @@ class TradeSignal:
     entry: float
     stop_loss: float
     take_profit: float
+    sl_distance: float
+    tp_distance: float
     win_probability: float
     confidence: float
     risk_reward: float
@@ -234,19 +236,42 @@ def _lot_size(
 
 
 def _tp_sl(side: Side, entry: float, atr: float, snap: dict) -> tuple[float, float, float]:
+    """ATR-first TP/SL with a capped structure nudge.
+
+    Earlier versions pinned SL beyond the full 20-bar swing, which could make
+    the stop ~$40–$50 wide while ATR only called for ~$10–$15. That felt like
+    "SL is huge, TP is tiny." We now:
+      1) size SL from ATR
+      2) only nudge toward nearby structure if it stays inside max_sl_atr_mult
+      3) always place TP farther than SL (min R:R)
+    """
     atr = max(safe_nan(atr, entry * 0.002), entry * 0.0008)
     sl_dist = atr * settings.sl_atr_mult
+    max_sl_dist = atr * settings.max_sl_atr_mult
     tp_dist = atr * settings.tp_atr_mult
 
-    # Structure-aware SL: beyond recent swing
     if side == "BUY":
-        struct_sl = snap["swing_low"] - atr * 0.2
-        stop_loss = min(entry - sl_dist, struct_sl) if np.isfinite(struct_sl) else entry - sl_dist
-        take_profit = entry + max(tp_dist, abs(entry - stop_loss) * settings.min_rr)
+        atr_sl = entry - sl_dist
+        struct_sl = snap["swing_low"] - atr * 0.15
+        # Prefer structure only when it is a *nearby* invalidation, not a canyon
+        if np.isfinite(struct_sl) and atr_sl >= struct_sl >= entry - max_sl_dist:
+            stop_loss = struct_sl
+        else:
+            stop_loss = atr_sl
+        # Hard cap: never wider than max ATR multiple
+        stop_loss = max(stop_loss, entry - max_sl_dist)
+        sl_gap = entry - stop_loss
+        take_profit = entry + max(tp_dist, sl_gap * settings.min_rr)
     elif side == "SELL":
-        struct_sl = snap["swing_high"] + atr * 0.2
-        stop_loss = max(entry + sl_dist, struct_sl) if np.isfinite(struct_sl) else entry + sl_dist
-        take_profit = entry - max(tp_dist, abs(stop_loss - entry) * settings.min_rr)
+        atr_sl = entry + sl_dist
+        struct_sl = snap["swing_high"] + atr * 0.15
+        if np.isfinite(struct_sl) and atr_sl <= struct_sl <= entry + max_sl_dist:
+            stop_loss = struct_sl
+        else:
+            stop_loss = atr_sl
+        stop_loss = min(stop_loss, entry + max_sl_dist)
+        sl_gap = stop_loss - entry
+        take_profit = entry - max(tp_dist, sl_gap * settings.min_rr)
     else:
         return entry, entry, 0.0
 
@@ -286,7 +311,10 @@ def analyze_xauusd(
         risk_amount = 0.0
         stop_loss = round(entry - atr * settings.sl_atr_mult, 2)
         take_profit = round(entry + atr * settings.tp_atr_mult, 2)
-        rr = settings.min_rr
+        rr = round(abs(take_profit - entry) / max(abs(entry - stop_loss), 1e-9), 2)
+
+    sl_distance = round(abs(entry - stop_loss), 2)
+    tp_distance = round(abs(entry - take_profit), 2)
 
     return TradeSignal(
         symbol=settings.display_symbol,
@@ -295,6 +323,8 @@ def analyze_xauusd(
         entry=entry,
         stop_loss=stop_loss,
         take_profit=take_profit,
+        sl_distance=sl_distance,
+        tp_distance=tp_distance,
         win_probability=round(win_prob, 1),
         confidence=round(confidence, 1),
         risk_reward=rr,

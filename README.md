@@ -30,7 +30,7 @@ python cli.py --interval 15m --balance 1000 --risk 2
 |--------|---------|
 | Side | `BUY`, `SELL`, or `WAIT` when confluence is weak |
 | Lot size | Position size from account balance, risk %, SL distance, and confidence |
-| TP / SL | ATR-based targets, nudged by recent swing structure |
+| TP / SL | ATR-based targets (TP always farther than SL); nearby structure can nudge SL, but never blow it out past 2×ATR |
 | Win % | Estimated probability from indicator agreement (capped realistically) |
 
 ## Analysis stack

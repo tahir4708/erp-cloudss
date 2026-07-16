@@ -42,6 +42,7 @@ def main() -> int:
     print(f"  1) Side          : {data['side']}")
     print(f"  2) Lot size      : {data['lot_size']}")
     print(f"  3) TP / SL       : {data['take_profit']}  /  {data['stop_loss']}")
+    print(f"     Distances    : TP ${data['tp_distance']}  |  SL ${data['sl_distance']}  (price $)")
     print(f"  4) Win %         : {data['win_probability']}%  (confidence {data['confidence']}%)")
     print("-" * 48)
     print(f"  Entry           : {data['entry']}")

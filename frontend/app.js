@@ -16,6 +16,7 @@ const els = {
   win: $("winValue"),
   conf: $("confNote"),
   rr: $("rrNote"),
+  slNote: $("slNote"),
   riskNote: $("riskNote"),
   reasons: $("reasonList"),
   votes: $("voteList"),
@@ -145,7 +146,8 @@ function renderSignal(data) {
   els.tp.textContent = Number(data.take_profit).toFixed(2);
   els.win.textContent = `${Number(data.win_probability).toFixed(1)}%`;
   els.conf.textContent = `Confidence ${Number(data.confidence).toFixed(1)}%`;
-  els.rr.textContent = `R:R ${Number(data.risk_reward).toFixed(2)}`;
+  els.slNote.textContent = `Distance $${Number(data.sl_distance).toFixed(2)} · ATR-based`;
+  els.rr.textContent = `Distance $${Number(data.tp_distance).toFixed(2)} · R:R ${Number(data.risk_reward).toFixed(2)}`;
   els.riskNote.textContent =
     data.side === "WAIT"
       ? "No trade — wait for confluence"

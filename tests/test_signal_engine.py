@@ -59,7 +59,21 @@ def test_tp_sl_buy_has_positive_rr():
     sl, tp, rr = _tp_sl("BUY", 2300.0, atr=8.0, snap=snap)
     assert sl < 2300
     assert tp > 2300
-    assert rr >= 1.5
+    assert rr >= 1.8
+    assert abs(tp - 2300) > abs(2300 - sl)
+
+
+def test_tp_sl_ignores_distant_swing():
+    """Far swing highs must not blow SL out to $40+ when ATR is ~$8."""
+    atr = 8.0
+    entry = 3980.0
+    snap = {"swing_low": 3970.0, "swing_high": 4022.0}  # ~$42 away
+    sl, tp, rr = _tp_sl("SELL", entry, atr=atr, snap=snap)
+    sl_dist = abs(sl - entry)
+    tp_dist = abs(entry - tp)
+    assert sl_dist <= atr * 2.0 + 1e-6
+    assert tp_dist > sl_dist
+    assert rr >= 1.8
 
 
 def test_wait_lot_is_zero():

@@ -22,7 +22,7 @@ FRONTEND = ROOT / "frontend"
 
 app = FastAPI(
     title="XAU/USD Signal Bot",
-    description="Chart analysis signals for Gold (XAU/USD): side, lot size, TP/SL, win %",
+    description="Chart analysis signals for Gold (XAU/USD): side, entry, lot size, TP/SL, win %",
     version="1.0.0",
 )
 

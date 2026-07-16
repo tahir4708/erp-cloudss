@@ -30,7 +30,7 @@ python cli.py --interval 15m --balance 1000 --risk 2
 You have **3 easy options**:
 
 ### Option A — Telegram (best for phone)
-Get signals as chat messages (Buy/Sell, lot, TP/SL, win %).
+Get signals as chat messages (Buy/Sell, entry, lot, TP/SL, win %).
 
 1. In Telegram, open **@BotFather** → `/newbot` → copy the **token**
 2. Open your new bot and tap **Start**

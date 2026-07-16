@@ -24,6 +24,52 @@ python run.py
 python cli.py --interval 15m --balance 1000 --risk 2
 ```
 
+## Use on your mobile
+
+You have **3 easy options**:
+
+### Option A — Telegram (best for phone)
+Get signals as chat messages (Buy/Sell, lot, TP/SL, win %).
+
+1. In Telegram, open **@BotFather** → `/newbot` → copy the **token**
+2. Open your new bot and tap **Start**
+3. Get your chat id:
+   ```bash
+   curl "https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates"
+   ```
+   Find `"chat":{"id": 123456789}`
+4. On a PC / VPS / always-on machine:
+   ```bash
+   export TELEGRAM_BOT_TOKEN="123:ABC..."
+   export TELEGRAM_CHAT_ID="123456789"
+   python telegram_bot.py
+   ```
+5. On your phone Telegram, tap **`/signal`**
+
+Send one signal and exit:
+```bash
+python telegram_bot.py --once
+```
+
+Auto-send every 30 minutes:
+```bash
+python telegram_bot.py --auto-minutes 30
+```
+
+### Option B — Phone browser (same Wi‑Fi as your PC)
+1. Start the web app on your computer: `python run.py`
+2. Find your PC’s local IP (example `192.168.1.20`)
+3. On your phone browser open: `http://192.168.1.20:8000`
+4. Optional: browser menu → **Add to Home Screen** for an app-like icon
+
+### Option C — Host online (open from anywhere)
+Deploy this repo (Docker included) to Render / Railway / Fly.io / any VPS, then open the public URL on your phone.
+
+```bash
+docker build -t aurum .
+docker run -p 8000:8000 aurum
+```
+
 ## What you get
 
 | Output | Meaning |

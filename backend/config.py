@@ -32,8 +32,9 @@ class Settings(BaseSettings):
     lookback_bars: int = 200
 
     # Account / risk defaults (user can override via API)
+    # Playbook §7: risk 0.5%–1% of the account per trade.
     account_balance: float = 1000.0
-    max_risk_percent: float = 2.0  # max % of balance risked per trade
+    max_risk_percent: float = 1.0  # max % of balance risked per trade
     min_lot: float = 0.01
     max_lot: float = 1.0
     lot_step: float = 0.01
@@ -43,12 +44,12 @@ class Settings(BaseSettings):
     contract_size: float = 100.0  # ounces per lot
     point_value_per_lot: float = 1.0  # $1 per $1 move per 0.01 lot ≈ scale via contract
 
-    # ATR-based SL/TP multipliers
-    # SL ≈ 1.5×ATR, TP ≈ 2.5×ATR, always keep TP farther than SL (min R:R)
-    sl_atr_mult: float = 1.5
-    tp_atr_mult: float = 2.5
-    max_sl_atr_mult: float = 2.0  # never let structure blow SL past this
-    min_rr: float = 1.8
+    # ATR-based SL/TP multipliers (playbook §5/§6)
+    # SL = 1–1.5×ATR just beyond structure; TP targets min 1:2, ideally 1:3.
+    sl_atr_mult: float = 1.25
+    tp_atr_mult: float = 3.0
+    max_sl_atr_mult: float = 1.5  # never let structure blow SL past 1.5×ATR
+    min_rr: float = 2.0
 
     # Confidence → lot scaling
     min_confidence_to_trade: float = 55.0

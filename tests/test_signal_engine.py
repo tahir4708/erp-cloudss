@@ -51,9 +51,12 @@ def test_bullish_votes_prefer_buy():
 
 
 def test_lot_scales_with_confidence():
-    cs = 100.0
-    low_lot, _ = _lot_size("BUY", 2300, 2290, confidence=55, account_balance=1000, risk_percent=2, contract_size=cs)
-    high_lot, _ = _lot_size("BUY", 2300, 2290, confidence=85, account_balance=1000, risk_percent=2, contract_size=cs)
+    low_lot, _ = _lot_size(
+        "BUY", 2300, 2290, confidence=55, account_balance=1000, risk_percent=2, contract_size=100.0
+    )
+    high_lot, _ = _lot_size(
+        "BUY", 2300, 2290, confidence=85, account_balance=1000, risk_percent=2, contract_size=100.0
+    )
     assert high_lot >= low_lot
     assert low_lot >= 0.01
 
@@ -81,6 +84,8 @@ def test_tp_sl_ignores_distant_swing():
 
 
 def test_wait_lot_is_zero():
-    lot, risk = _lot_size("WAIT", 2300, 2290, confidence=60, account_balance=1000, risk_percent=2, contract_size=100.0)
+    lot, risk = _lot_size(
+        "WAIT", 2300, 2290, confidence=60, account_balance=1000, risk_percent=2, contract_size=100.0
+    )
     assert lot == 0.0
     assert risk == 0.0

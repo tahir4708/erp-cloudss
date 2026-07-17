@@ -11,7 +11,7 @@ import pandas as pd
 from backend.candle_patterns import CandleVote, candle_snapshot, candle_votes, pattern_snapshot
 from backend.config import get_instrument, settings
 from backend.data_feed import candles_to_list, fetch_ohlcv
-from backend.indicators import enrich, latest_snapshot, safe_nan
+from backend.indicators import PATTERN_LIBRARY, enrich, latest_snapshot, safe_nan
 
 Side = Literal["BUY", "SELL", "WAIT"]
 AnalysisMode = Literal["indicators", "candles"]
@@ -60,7 +60,21 @@ def _votes(snap: dict) -> list[Vote]:
     votes: list[Vote] = []
     price = snap["price"]
 
-    # 1) EMA trend stack
+    # ------------------------------------------------------------------
+    # LAYER 1 — Top-down market bias (playbook §1): price vs 50 & 200 EMA.
+    # Above both = bullish bias, below both = bearish, chopping between =
+    # range / no-trade mode. This is the highest-weight gate in the system.
+    # ------------------------------------------------------------------
+    ema_trend = snap["ema_trend"]
+    ema_long = snap.get("ema_long", ema_trend)
+    if price > ema_trend and price > ema_long and ema_trend >= ema_long:
+        votes.append(Vote("Market Bias", "BUY", 1.6, "Price above 50 & 200 EMA (bullish bias)"))
+    elif price < ema_trend and price < ema_long and ema_trend <= ema_long:
+        votes.append(Vote("Market Bias", "SELL", 1.6, "Price below 50 & 200 EMA (bearish bias)"))
+    else:
+        votes.append(Vote("Market Bias", "NEUTRAL", 0.6, "Price chopping between 50/200 EMA — range mode"))
+
+    # 1b) EMA trend stack (short-term alignment / 4H-style confirmation)
     if snap["ema_fast"] > snap["ema_slow"] > snap["ema_trend"]:
         votes.append(Vote("EMA Trend", "BUY", 1.2, "Fast > Slow > Trend EMA (bullish stack)"))
     elif snap["ema_fast"] < snap["ema_slow"] < snap["ema_trend"]:
@@ -153,10 +167,79 @@ def _votes(snap: dict) -> list[Vote]:
     else:
         votes.append(Vote("Structure", "NEUTRAL", 0.3, "Price mid-range / mixed structure"))
 
+    # ------------------------------------------------------------------
+    # LAYER 2 — Entry trigger at a pre-marked level (playbook §2).
+    # A candle pattern only counts when it prints at a Fib 38.2–61.8% zone
+    # or prior swing S/R. Pattern alone (no level) is intentionally muted.
+    # ------------------------------------------------------------------
+    pattern_code = int(snap.get("pattern_code", 0))
+    pattern_dir = int(snap.get("pattern_dir", 0))
+    at_bull_level = bool(snap.get("at_bull_level", 0))
+    at_bear_level = bool(snap.get("at_bear_level", 0))
+    pattern_name, _ = PATTERN_LIBRARY.get(pattern_code, ("no clean pattern", 0))
+
+    if pattern_dir > 0 and at_bull_level:
+        votes.append(Vote("Candle Trigger", "BUY", 1.4, f"{pattern_name} at support/Fib zone"))
+    elif pattern_dir < 0 and at_bear_level:
+        votes.append(Vote("Candle Trigger", "SELL", 1.4, f"{pattern_name} at resistance/Fib zone"))
+    elif pattern_code == 9:
+        votes.append(Vote("Candle Trigger", "NEUTRAL", 0.4, "Doji at level — wait for confirmation"))
+    elif pattern_dir != 0:
+        # Pattern present but not at a level: no confluence per playbook rule.
+        votes.append(Vote("Candle Trigger", "NEUTRAL", 0.3, f"{pattern_name} but not at a key level"))
+    else:
+        votes.append(Vote("Candle Trigger", "NEUTRAL", 0.2, "No trigger candle at a key level"))
+
+    # 10) Fib / structure location bias (playbook §2 levels)
+    if bool(snap.get("fib_bull_zone", 0)) or bool(snap.get("near_support", 0)):
+        votes.append(Vote("Level", "BUY", 0.8, "Price in bullish Fib/discount zone or at support"))
+    elif bool(snap.get("fib_bear_zone", 0)) or bool(snap.get("near_resistance", 0)):
+        votes.append(Vote("Level", "SELL", 0.8, "Price in bearish Fib/premium zone or at resistance"))
+    else:
+        votes.append(Vote("Level", "NEUTRAL", 0.2, "Price not at a pre-marked level"))
+
+    # ------------------------------------------------------------------
+    # LAYER 3 — Confirmation layer (playbook §3): volume, RSI divergence,
+    # and MA-pullback continuation. These add/subtract confluence only.
+    # ------------------------------------------------------------------
+    vol_ratio = snap.get("vol_ratio", 0.0)
+    if vol_ratio >= 1.2:
+        # Above-average volume backs whichever side the price action leans.
+        vol_side = "BUY" if price >= snap["ema_slow"] else "SELL"
+        votes.append(Vote("Volume", vol_side, 0.7, f"Volume {vol_ratio:.1f}x average — real participation"))
+    elif vol_ratio and vol_ratio < 0.7:
+        votes.append(Vote("Volume", "NEUTRAL", 0.3, f"Volume {vol_ratio:.1f}x average — thin, low conviction"))
+    else:
+        votes.append(Vote("Volume", "NEUTRAL", 0.2, "Volume near average"))
+
+    if bool(snap.get("bull_div", 0)):
+        votes.append(Vote("RSI Divergence", "BUY", 0.9, "Bullish RSI divergence at reversal zone"))
+    elif bool(snap.get("bear_div", 0)):
+        votes.append(Vote("RSI Divergence", "SELL", 0.9, "Bearish RSI divergence at reversal zone"))
+    else:
+        votes.append(Vote("RSI Divergence", "NEUTRAL", 0.2, "No RSI divergence"))
+
+    # MA pullback continuation: price tagging the 50 EMA inside the macro trend.
+    if bool(snap.get("pullback_tag", 0)):
+        if price > ema_long and snap["ema_fast"] > snap["ema_trend"]:
+            votes.append(Vote("MA Pullback", "BUY", 0.8, "Pullback tagging 50 EMA in uptrend — continuation"))
+        elif price < ema_long and snap["ema_fast"] < snap["ema_trend"]:
+            votes.append(Vote("MA Pullback", "SELL", 0.8, "Pullback tagging 50 EMA in downtrend — continuation"))
+        else:
+            votes.append(Vote("MA Pullback", "NEUTRAL", 0.2, "Price at 50 EMA but trend unclear"))
+    else:
+        votes.append(Vote("MA Pullback", "NEUTRAL", 0.2, "No 50 EMA pullback tag"))
+
     return votes
 
 
 def _score(votes: list[Vote] | list[CandleVote], *, wait_msg: str) -> tuple[Side, float, float, list[str]]:
+    # Playbook §1 hard rule: if the top-down 50/200 bias is range/neutral,
+    # we are in no-trade mode regardless of what the lower layers say.
+    # (Candle-mode votes have no "Market Bias" entry, so this is a no-op there.)
+    bias = next((v for v in votes if v.name == "Market Bias"), None)
+    range_mode = bias is not None and bias.side == "NEUTRAL"
+
     buy = sum(v.weight for v in votes if v.side == "BUY")
     sell = sum(v.weight for v in votes if v.side == "SELL")
     total = buy + sell + sum(v.weight for v in votes if v.side == "NEUTRAL")
@@ -181,6 +264,12 @@ def _score(votes: list[Vote] | list[CandleVote], *, wait_msg: str) -> tuple[Side
 
     # Win probability slightly below raw confidence (honest framing)
     win_probability = float(np.clip(confidence - 3.0 + edge * 5.0, 48.0, 82.0))
+
+    if range_mode:
+        side = "WAIT"
+        reasons = ["No trade: price is chopping between the 50/200 EMA (range mode)"]
+        reasons += [v.reason for v in votes if v.side == "NEUTRAL"][:3]
+        return side, confidence, win_probability, reasons
 
     if side == "WAIT" or confidence < settings.min_confidence_to_trade:
         side = "WAIT"

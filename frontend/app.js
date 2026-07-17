@@ -59,6 +59,7 @@ let ws = null;
 let wsKey = null;
 let lastBarTime = 0;
 let lastChartClose = 0;
+let lastBar = null; // OHLC of the forming candle, updated live tick-by-tick
 let feedBasis = null; // offset added to raw feed prices to align with the chart
 
 function showToast(message) {
@@ -143,6 +144,10 @@ function drawChart(candles, signal) {
   candleSeries.setData(bars);
   lastBarTime = bars.length ? bars[bars.length - 1].time : 0;
   lastChartClose = bars.length ? bars[bars.length - 1].close : 0;
+  lastBar = bars.length ? { ...bars[bars.length - 1] } : null;
+  // Re-anchor the live feed to this freshly polled close so the tick stream
+  // realigns each refresh instead of drifting away from the chart.
+  feedBasis = null;
 
   volumeSeries.setData(
     candles.map((c) => ({
@@ -227,7 +232,7 @@ function connectRealtime() {
   ws = socket;
 
   socket.onmessage = (event) => {
-    if (socket !== ws || !candleSeries) return;
+    if (socket !== ws || !candleSeries || !lastBar) return;
     let msg;
     try {
       msg = JSON.parse(event.data);
@@ -237,29 +242,48 @@ function connectRealtime() {
     const k = msg.k;
     if (!k) return;
 
-    const time = Math.floor(k.t / 1000);
-    if (time < lastBarTime) return; // never rewrite history
-
     // Align the feed to the chart's price scale (e.g. PAX Gold spot vs gold
-    // futures, or Binance vs Yahoo). Basis is fixed once at first tick.
+    // futures, or Binance vs Yahoo). Basis is fixed once at first tick so the
+    // first live price matches the chart's last close, then fluctuates from
+    // there. Recomputed whenever a fresh poll resets the chart data.
     if (feedBasis === null) {
       feedBasis = lastChartClose ? lastChartClose - +k.c : 0;
     }
 
-    const open = +k.o + feedBasis;
-    const high = +k.h + feedBasis;
-    const low = +k.l + feedBasis;
-    const close = +k.c + feedBasis;
+    const price = +k.c + feedBasis;
+    const barTime = Math.floor(k.t / 1000);
 
-    candleSeries.update({ time, open, high, low, close });
-    volumeSeries.update({
-      time,
-      value: +k.v,
-      color: close >= open ? "rgba(31,157,95,0.35)" : "rgba(210,63,47,0.35)",
+    if (barTime > lastBarTime) {
+      // A brand-new candle period opened on the live feed: append it so the
+      // chart rolls forward instead of overwriting the previous bar.
+      lastBar = {
+        time: barTime,
+        open: +k.o + feedBasis,
+        high: +k.h + feedBasis,
+        low: +k.l + feedBasis,
+        close: price,
+      };
+      lastBarTime = barTime;
+    } else {
+      // Same (or earlier-stamped) period: tick the forming candle in place.
+      // Yahoo stamps the partial bar at the fetch instant, so the Binance
+      // bar-open time is usually *earlier* — we pin the update to the chart's
+      // own last-bar time and just move close / extend the wicks.
+      lastBar.close = price;
+      lastBar.high = Math.max(lastBar.high, price);
+      lastBar.low = Math.min(lastBar.low, price);
+    }
+
+    candleSeries.update({
+      time: lastBar.time,
+      open: lastBar.open,
+      high: lastBar.high,
+      low: lastBar.low,
+      close: lastBar.close,
     });
-    lastBarTime = Math.max(lastBarTime, time);
+    lastChartClose = price;
 
-    els.caption.textContent = `${lastSignal?.symbol || els.instrument.value} · ${fmtPrice(close)} · live`;
+    els.caption.textContent = `${lastSignal?.symbol || els.instrument.value} · ${fmtPrice(price)} · live`;
   };
 
   socket.onclose = () => {

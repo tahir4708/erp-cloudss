@@ -12,7 +12,10 @@ from backend.candle_patterns import CandleVote, candle_snapshot, candle_votes, p
 from backend.config import get_instrument, settings
 from backend.data_feed import candles_to_list, fetch_ohlcv
 from backend.indicators import PATTERN_LIBRARY, enrich, latest_snapshot, safe_nan
+from backend.exness_feed import exness_entry_price, supports_exness
 from backend.live_feed import fetch_live_ticker, has_live_feed
+
+PriceSource = Literal["chart", "exness"]
 
 Side = Literal["BUY", "SELL", "WAIT"]
 AnalysisMode = Literal["indicators", "candles"]
@@ -42,6 +45,8 @@ class TradeSignal:
     atr: float
     timeframe: str
     analysis_mode: str = "indicators"
+    price_source: str = "chart"
+    broker_quote: dict[str, Any] | None = None
     reasons: list[str] = field(default_factory=list)
     indicator_votes: list[dict[str, Any]] = field(default_factory=list)
     account_balance: float = 1000.0
@@ -411,15 +416,43 @@ def analyze_xauusd(
     risk_percent: float | None = None,
     instrument: str | None = None,
     mode: AnalysisMode = "indicators",
+    price_source: PriceSource = "chart",
 ) -> TradeSignal:
     """Run full analysis and return a trade signal for the given instrument."""
     if mode == "candles":
-        return _analyze_candles(interval, account_balance, risk_percent, instrument)
-    return _analyze_indicators(interval, account_balance, risk_percent, instrument)
+        return _analyze_candles(interval, account_balance, risk_percent, instrument, price_source)
+    return _analyze_indicators(interval, account_balance, risk_percent, instrument, price_source)
 
 
-def _live_entry(instrument: str | None, fallback: float) -> float:
-    """Pin entry to the live Binance last price when available."""
+def _apply_entry_source(
+    instrument: str | None,
+    candle_entry: float,
+    stop_loss: float,
+    take_profit: float,
+    price_source: PriceSource,
+) -> tuple[float, float, float, dict[str, Any] | None]:
+    """Shift entry/TP/SL to Exness mid when requested (keeps distances)."""
+    if price_source != "exness" or not supports_exness(instrument or ""):
+        return candle_entry, stop_loss, take_profit, None
+
+    exness_mid, meta = exness_entry_price(instrument, candle_entry)
+    delta = exness_mid - candle_entry
+    if abs(delta) < 1e-9:
+        return candle_entry, stop_loss, take_profit, meta
+
+    return (
+        round(exness_mid, 2),
+        round(stop_loss + delta, 2),
+        round(take_profit + delta, 2),
+        meta,
+    )
+
+
+def _live_entry(instrument: str | None, fallback: float, price_source: PriceSource = "chart") -> float:
+    """Pin entry to live chart price, or Exness mid when price_source=exness."""
+    if price_source == "exness" and supports_exness(instrument or ""):
+        mid, _ = exness_entry_price(instrument, fallback)
+        return mid
     if not has_live_feed(instrument or ""):
         return fallback
     try:
@@ -428,11 +461,34 @@ def _live_entry(instrument: str | None, fallback: float) -> float:
         return fallback
 
 
+def _finalize_levels(
+    instrument: str | None,
+    candle_entry: float,
+    stop_loss: float,
+    take_profit: float,
+    price_source: PriceSource,
+) -> tuple[float, float, float, float, dict[str, Any] | None]:
+    """Apply live chart or Exness entry; shift TP/SL to keep distances."""
+    if price_source == "exness":
+        entry, stop_loss, take_profit, meta = _apply_entry_source(
+            instrument, candle_entry, stop_loss, take_profit, price_source
+        )
+    else:
+        entry = _live_entry(instrument, candle_entry, "chart")
+        delta = entry - candle_entry
+        stop_loss = round(stop_loss + delta, 2)
+        take_profit = round(take_profit + delta, 2)
+        meta = None
+    rr = abs(take_profit - entry) / max(abs(entry - stop_loss), 1e-9)
+    return entry, stop_loss, take_profit, round(rr, 2), meta
+
+
 def _analyze_indicators(
     interval: str,
     account_balance: float | None,
     risk_percent: float | None,
     instrument: str | None,
+    price_source: PriceSource = "chart",
 ) -> TradeSignal:
     """Indicator-based confluence analysis."""
     balance = account_balance if account_balance is not None else settings.account_balance
@@ -458,10 +514,13 @@ def _analyze_indicators(
         votes,
         wait_msg="Indicators are mixed — no high-conviction setup right now",
     )
-    entry = _live_entry(instrument, round(snap["price"], 2))
+    candle_entry = round(snap["price"], 2)
     atr = snap["atr"]
 
-    stop_loss, take_profit, rr = _tp_sl(side, entry, atr, snap)
+    sl0, tp0, _ = _tp_sl(side, candle_entry, atr, snap)
+    entry, stop_loss, take_profit, rr, broker_meta = _finalize_levels(
+        instrument, candle_entry, sl0, tp0, price_source
+    )
     lot, risk_amount = _lot_size(
         side, entry, stop_loss, confidence, balance, risk_pct, contract_size
     )
@@ -491,6 +550,8 @@ def _analyze_indicators(
         atr=round(atr, 2),
         timeframe=interval,
         analysis_mode="indicators",
+        price_source=price_source,
+        broker_quote=broker_meta,
         reasons=reasons,
         indicator_votes=[asdict(v) for v in votes],
         account_balance=balance,
@@ -516,6 +577,7 @@ def _analyze_candles(
     account_balance: float | None,
     risk_percent: float | None,
     instrument: str | None,
+    price_source: PriceSource = "chart",
 ) -> TradeSignal:
     """Pure candlestick / price-action analysis (no RSI, MACD, EMA, etc.)."""
     balance = account_balance if account_balance is not None else settings.account_balance
@@ -538,14 +600,17 @@ def _analyze_candles(
         wait_msg="Candle patterns are mixed — no high-conviction setup right now",
         enforce_range_gate=False,
     )
-    entry = _live_entry(instrument, round(pa_snap["price"], 2))
+    candle_entry = round(pa_snap["price"], 2)
     avg_rng = pa_snap["avg_range"]
 
     tp_snap = {
         "swing_high": pa_snap["swing_high"],
         "swing_low": pa_snap["swing_low"],
     }
-    stop_loss, take_profit, rr = _tp_sl(side, entry, avg_rng, tp_snap)
+    sl0, tp0, _ = _tp_sl(side, candle_entry, avg_rng, tp_snap)
+    entry, stop_loss, take_profit, rr, broker_meta = _finalize_levels(
+        instrument, candle_entry, sl0, tp0, price_source
+    )
     lot, risk_amount = _lot_size(
         side, entry, stop_loss, confidence, balance, risk_pct, contract_size
     )
@@ -576,6 +641,8 @@ def _analyze_candles(
         atr=round(avg_rng, 2),
         timeframe=interval,
         analysis_mode="candles",
+        price_source=price_source,
+        broker_quote=broker_meta,
         reasons=reasons,
         indicator_votes=[asdict(v) for v in votes],
         account_balance=balance,

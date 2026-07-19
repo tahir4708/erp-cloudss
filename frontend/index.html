@@ -41,10 +41,19 @@
         <input type="hidden" id="instrument" value="BTCUSD" />
         <ul id="instrumentList" class="search-select-list" hidden></ul>
       </div>
-      <div class="market-quote">
-        <span class="quote-pair" id="quotePair">BTC/USDT</span>
-        <span class="quote-price" id="quotePrice">—</span>
-        <span class="quote-change flat" id="quoteChange">—</span>
+      <div class="market-quote" id="marketQuote">
+        <div class="quote-block">
+          <span class="quote-label">Chart</span>
+          <span class="quote-pair" id="quotePair">BTC/USDT</span>
+          <span class="quote-price" id="quotePrice">—</span>
+          <span class="quote-change flat" id="quoteChange">—</span>
+        </div>
+        <div class="quote-block exness" id="exnessQuoteBlock" hidden>
+          <span class="quote-label">Exness</span>
+          <span class="quote-pair" id="quoteExnessSym">XAUUSDm</span>
+          <span class="quote-price" id="quoteExnessPrice">—</span>
+          <span class="quote-diff flat" id="quoteDiff">—</span>
+        </div>
       </div>
     </div>
   </section>
@@ -59,6 +68,13 @@
           lot size, TP/SL, and win probability.
         </p>
         <div class="controls">
+          <label>
+            Entry price
+            <select id="priceSource">
+              <option value="chart">Chart feed (Binance)</option>
+              <option value="exness">Exness broker</option>
+            </select>
+          </label>
           <label>
             Analysis
             <select id="mode">

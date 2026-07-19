@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 from backend.config import DEFAULT_INSTRUMENT, INSTRUMENTS, is_known_instrument, settings
+from backend.exness_feed import compare_prices, fetch_exness_quote, supports_exness
 from backend.live_feed import fetch_live_klines, fetch_live_ticker, has_live_feed
 from backend.signal_engine import analyze_xauusd, quick_backtest_hint
 
@@ -61,6 +62,11 @@ class AnalyzeRequest(BaseModel):
     risk_percent: float = Field(default=2.0, gt=0, le=5, description="Max risk % per trade")
     instrument: str = Field(default=DEFAULT_INSTRUMENT, description="Instrument key")
     mode: str = Field(default="indicators", pattern="^(indicators|candles)$")
+    price_source: str = Field(
+        default="chart",
+        pattern="^(chart|exness)$",
+        description="Entry price: chart feed (Binance) or Exness broker",
+    )
 
     @field_validator("instrument")
     @classmethod
@@ -147,8 +153,14 @@ def get_signal(
     risk_percent: float = Query(default=2.0, gt=0, le=5),
     instrument: str = Query(default=DEFAULT_INSTRUMENT),
     mode: str = Query(default="indicators", pattern="^(indicators|candles)$"),
+    price_source: str = Query(default="chart", pattern="^(chart|exness)$"),
 ):
     instrument = _require_instrument(instrument)
+    if price_source == "exness" and not supports_exness(instrument):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Exness entry only for Gold (XAUUSD) and BTC (BTCUSD)",
+        )
     try:
         signal = analyze_xauusd(
             interval=interval,
@@ -156,8 +168,15 @@ def get_signal(
             risk_percent=risk_percent,
             instrument=instrument,
             mode=mode,  # type: ignore[arg-type]
+            price_source=price_source,  # type: ignore[arg-type]
         )
         payload = signal.to_dict()
+        if supports_exness(instrument):
+            try:
+                payload["broker_compare"] = compare_prices(instrument)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Broker compare failed: %s", exc)
+                payload["broker_compare"] = None
         if (
             mode != "indicators"
             or os.getenv("DISABLE_BACKTEST_HINT", "").lower() in ("1", "true", "yes")
@@ -185,7 +204,34 @@ def post_signal(body: AnalyzeRequest):
         risk_percent=body.risk_percent,
         instrument=body.instrument,
         mode=body.mode,
+        price_source=body.price_source,
     )
+
+
+@app.get("/api/broker/compare")
+def broker_compare(instrument: str = Query(default="XAUUSD")):
+    """Reference (Binance) vs Exness price — Gold & BTC only."""
+    instrument = _require_instrument(instrument)
+    if not supports_exness(instrument):
+        raise HTTPException(
+            status_code=400,
+            detail="Exness compare is available for XAUUSD (Gold) and BTCUSD only",
+        )
+    try:
+        return compare_prices(instrument)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/broker/exness/quote")
+def broker_exness_quote(instrument: str = Query(default="XAUUSD")):
+    instrument = _require_instrument(instrument)
+    if not supports_exness(instrument):
+        raise HTTPException(status_code=400, detail="Exness quote only for XAUUSD and BTCUSD")
+    try:
+        return fetch_exness_quote(instrument)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/api/live/ticker")

@@ -8,6 +8,11 @@ const els = {
   quotePair: $("quotePair"),
   quotePrice: $("quotePrice"),
   quoteChange: $("quoteChange"),
+  exnessBlock: $("exnessQuoteBlock"),
+  quoteExnessSym: $("quoteExnessSym"),
+  quoteExnessPrice: $("quoteExnessPrice"),
+  quoteDiff: $("quoteDiff"),
+  priceSource: $("priceSource"),
   mode: $("mode"),
   interval: $("interval"),
   balance: $("balance"),
@@ -62,12 +67,61 @@ let lastBar = null;
 let lastUiTickMs = 0;
 let liveSource = "";
 
+const EXNESS_INSTRUMENTS = new Set(["XAUUSD", "BTCUSD"]);
+
+function isExnessInstrument(key) {
+  return EXNESS_INSTRUMENTS.has((key || "").toUpperCase());
+}
+
+function syncPriceSourceUi() {
+  const key = currentInstrument();
+  const show = isExnessInstrument(key);
+  if (els.exnessBlock) els.exnessBlock.hidden = !show;
+  if (els.priceSource) {
+    els.priceSource.disabled = !show;
+    if (!show) els.priceSource.value = "chart";
+  }
+}
+
 function currentInstrument() {
   return (els.instrument?.value || "BTCUSD").toUpperCase();
 }
 
 function instrumentMeta(key) {
   return instrumentCatalog.find((i) => i.key === key) || null;
+}
+
+async function refreshBrokerCompare() {
+  const instrument = currentInstrument();
+  if (!isExnessInstrument(instrument)) {
+    if (els.exnessBlock) els.exnessBlock.hidden = true;
+    return;
+  }
+  if (els.exnessBlock) els.exnessBlock.hidden = false;
+  try {
+    const res = await fetch(
+      `/api/broker/compare?instrument=${encodeURIComponent(instrument)}&_ts=${Date.now()}`,
+      { cache: "no-store" }
+    );
+    if (!res.ok) return;
+    const data = await res.json();
+    const ex = data.exness || {};
+    if (els.quoteExnessSym) els.quoteExnessSym.textContent = ex.symbol || "—";
+    if (els.quoteExnessPrice && ex.mid != null) {
+      els.quoteExnessPrice.textContent = fmtPrice(+ex.mid);
+    }
+    if (els.quoteDiff && data.diff) {
+      const d = +data.diff.amount;
+      const sign = d > 0 ? "+" : "";
+      const est = ex.status === "estimated" ? " est." : "";
+      els.quoteDiff.textContent = `${sign}${d.toFixed(2)}${est}`;
+      els.quoteDiff.classList.remove("up", "down", "estimated");
+      if (ex.status === "estimated") els.quoteDiff.classList.add("estimated");
+      else els.quoteDiff.classList.add(d > 0 ? "up" : d < 0 ? "down" : "flat");
+    }
+  } catch (_) {
+    /* optional panel */
+  }
 }
 
 function hasLiveFeed(key) {
@@ -387,7 +441,11 @@ function startRealtime() {
   };
 
   tickOnce();
-  tickerTimer = setInterval(tickOnce, 200);
+  tickerTimer = setInterval(() => {
+    tickOnce();
+    refreshBrokerCompare();
+  }, 200);
+  refreshBrokerCompare();
 }
 
 /** Seed the chart from Binance candles, then stream live ticks. */
@@ -488,6 +546,10 @@ function renderSignal(data) {
   els.disclaimer.textContent = data.disclaimer;
   els.live.textContent = data.side === "WAIT" ? "Stand by" : "Signal ready";
 
+  if (data.broker_compare?.exness) {
+    refreshBrokerCompare();
+  }
+
   // Keep the live Binance chart moving — only overlay TP/SL/ENTRY lines.
   // Do NOT replace the live seed with slow Yahoo candles (that caused the delay).
   if (candleSeries && lastBar) {
@@ -529,6 +591,7 @@ async function analyze() {
   const interval = els.interval.value;
   const instrument = currentInstrument();
   const mode = els.mode.value;
+  const price_source = els.priceSource?.value || "chart";
   const account_balance = Number(els.balance.value) || 1000;
   const risk_percent = Number(els.risk.value) || 2;
 
@@ -541,6 +604,7 @@ async function analyze() {
       interval,
       instrument,
       mode,
+      price_source,
       account_balance: String(account_balance),
       risk_percent: String(risk_percent),
       _ts: String(Date.now()),
@@ -551,6 +615,7 @@ async function analyze() {
       throw new Error(data.detail || "Signal request failed");
     }
     renderSignal(data);
+    refreshBrokerCompare();
   } catch (err) {
     console.error(err);
     showToast(err.message || "Could not fetch signal");
@@ -615,7 +680,11 @@ function selectInstrument(key, { reload = true } = {}) {
     lastSignal = null;
     els.board.hidden = true;
     els.detail.hidden = true;
+    syncPriceSourceUi();
     loadChartSeed();
+    refreshBrokerCompare();
+  } else {
+    syncPriceSourceUi();
   }
 }
 

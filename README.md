@@ -82,6 +82,34 @@ docker run -p 8000:8000 aurum
 python cli.py --mode candles --interval 15m
 ```
 
+## Exness prices (Gold & BTC)
+
+Chart analysis uses **Binance** (BTC, PAXG for gold). Your **Exness** terminal can show slightly different prices.
+
+For **XAUUSD** and **BTCUSD** the UI shows **two prices**:
+- **Chart** — Binance feed (used for candles/signals)
+- **Exness** — broker bid/ask (XAUUSDm / BTCUSDm)
+
+### Live Exness (recommended for demo trading)
+1. On your Windows PC with **MetaTrader 5** logged into Exness:
+   ```bash
+   pip install MetaTrader5 fastapi uvicorn
+   python exness_bridge.py
+   ```
+2. Point AURUM at your PC:
+   ```bash
+   export EXNESS_BRIDGE_URL=http://192.168.1.20:8787
+   ```
+
+### Quick calibration (no bridge)
+Compare Exness vs chart once, then set offset (USD):
+```bash
+export EXNESS_OFFSET_XAUUSD=-1.50
+export EXNESS_OFFSET_BTCUSD=12
+```
+
+In the UI, set **Entry price → Exness broker** so Entry / TP / SL match your Exness chart.
+
 ## What you get
 
 | Output | Meaning |

@@ -145,14 +145,34 @@ body {
 
 .market-quote {
   display: flex;
-  align-items: center;
-  gap: 0.85rem;
+  align-items: stretch;
+  gap: 0.65rem;
   flex: 0 1 auto;
-  padding: 0.55rem 1rem;
+  flex-wrap: wrap;
+}
+
+.quote-block {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.55rem 0.85rem;
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.92);
   border-radius: 4px;
   white-space: nowrap;
+}
+
+.quote-block.exness {
+  border-color: rgba(212, 168, 75, 0.45);
+  background: rgba(255, 252, 245, 0.95);
+}
+
+.quote-label {
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  font-weight: 600;
 }
 
 .quote-pair {
@@ -190,6 +210,30 @@ body {
 .quote-change.flat {
   color: var(--ink-soft);
   background: rgba(120, 90, 30, 0.08);
+}
+
+.quote-diff {
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  color: var(--ink-soft);
+}
+
+.quote-diff.up {
+  color: var(--buy);
+  background: rgba(31, 157, 95, 0.1);
+}
+
+.quote-diff.down {
+  color: var(--sell);
+  background: rgba(210, 63, 47, 0.1);
+}
+
+.quote-diff.estimated {
+  color: var(--gold-dim);
+  background: rgba(212, 168, 75, 0.12);
+  font-size: 0.72rem;
 }
 
 main {

@@ -83,6 +83,8 @@ def parse_symbol_id(symbol_id: str | None) -> MarketSymbol:
     venue, symbol = raw.split(":", 1)
     venue = venue.upper()
     symbol = symbol.strip()
+    if venue == "EXNESS" and not symbol.upper().endswith("M"):
+        symbol = f"{symbol}m"
 
     catalog = build_symbol_catalog()
     for row in catalog:
@@ -177,7 +179,9 @@ def build_symbol_catalog() -> list[MarketSymbol]:
             category="metals" if base_key == "XAUUSD" else "crypto",
             base_key=base_key,
             live=True,
-            keywords=f"exness {ex_sym} {name} {base_key} broker cfd".lower(),
+            keywords=f"exness {ex_sym} {name} {base_key} broker cfd gold xau xauusd exness gold exness xauusd".lower()
+            if base_key == "XAUUSD"
+            else f"exness {ex_sym} {name} {base_key} broker cfd".lower(),
         )
 
     # Yahoo commodities
@@ -203,32 +207,49 @@ def build_symbol_catalog() -> list[MarketSymbol]:
     )
 
 
-def search_symbols(query: str | None = None, limit: int = 80) -> list[dict[str, Any]]:
+def search_symbols(query: str | None = None, limit: int = 120) -> list[dict[str, Any]]:
     catalog = build_symbol_catalog()
     needle = (query or "").strip().lower()
+    popular = {
+        "BINANCE:BTCUSDT",
+        "EXNESS:BTCUSDm",
+        "BINANCE:ETHUSDT",
+        "EXNESS:ETHUSDm",
+        "BINANCE:PAXGUSDT",
+        "EXNESS:XAUUSDm",
+        "YAHOO:GC=F",
+    }
     if not needle:
-        # Default view: popular picks first
-        popular = {
-            "BINANCE:BTCUSDT",
-            "EXNESS:BTCUSDm",
-            "BINANCE:ETHUSDT",
-            "EXNESS:ETHUSDm",
-            "BINANCE:PAXGUSDT",
-            "EXNESS:XAUUSDm",
-            "YAHOO:GC=F",
-        }
         head = [r for r in catalog if r.id in popular]
         rest = [r for r in catalog if r.id not in popular][: max(0, limit - len(head))]
         return [r.to_dict() for r in head + rest]
 
+    terms = [t for t in needle.split() if t]
     out: list[MarketSymbol] = []
+    # Prefer Exness gold when user searches gold/xau without a venue
+    gold_bias = any(t in ("gold", "xau", "xauusd", "xauusdm") for t in terms) and not any(
+        t in ("binance", "yahoo") for t in terms
+    )
+
     for row in catalog:
         hay = f"{row.id} {row.venue} {row.symbol} {row.label} {row.name} {row.keywords}".lower()
-        if needle in hay:
-            out.append(row)
-        if len(out) >= limit:
-            break
-    return [r.to_dict() for r in out]
+        if terms and not all(term in hay for term in terms):
+            continue
+        out.append(row)
+
+    if gold_bias:
+        out.sort(
+            key=lambda r: (
+                0 if r.id == "EXNESS:XAUUSDm" else 1,
+                0 if r.venue == "EXNESS" and r.base_key == "XAUUSD" else 2,
+                0 if r.base_key == "XAUUSD" else 3,
+                r.name.lower(),
+            )
+        )
+    else:
+        out.sort(key=lambda r: (r.venue != "EXNESS", r.name.lower()))
+
+    return [r.to_dict() for r in out[:limit]]
 
 
 def is_known_symbol(symbol_id: str | None) -> bool:

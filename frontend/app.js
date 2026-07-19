@@ -48,6 +48,17 @@ let lastSignal = null;
 let fetching = false;
 let symbolCatalog = [];
 let symbolFilter = "";
+const POPULAR_SYMBOL_IDS = [
+  "BINANCE:BTCUSDT",
+  "EXNESS:BTCUSDm",
+  "BINANCE:PAXGUSDT",
+  "EXNESS:XAUUSDm",
+  "BINANCE:ETHUSDT",
+  "EXNESS:ETHUSDm",
+  "YAHOO:GC=F",
+];
+
+let symbolSearchTimer = null;
 let highlightIndex = -1;
 
 let chart = null;
@@ -654,13 +665,39 @@ async function analyze() {
 
 function filteredSymbols() {
   const q = symbolFilter.trim().toLowerCase();
-  if (!q) return symbolCatalog.slice(0, 60);
+  if (!q) {
+    const pinned = POPULAR_SYMBOL_IDS.map((id) => symbolMeta(id)).filter(Boolean);
+    const rest = symbolCatalog.filter((s) => !POPULAR_SYMBOL_IDS.includes(s.id)).slice(0, 53);
+    return [...pinned, ...rest];
+  }
+  const terms = q.split(/\s+/).filter(Boolean);
   return symbolCatalog
     .filter((s) => {
       const hay = `${s.id} ${s.venue} ${s.symbol} ${s.label} ${s.name} ${s.keywords || ""} ${s.display || ""}`.toLowerCase();
-      return hay.includes(q);
+      return terms.every((term) => hay.includes(term));
+    })
+    .sort((a, b) => {
+      const goldish = terms.some((t) => ["gold", "xau", "xauusd"].includes(t));
+      if (!goldish) return 0;
+      if (a.id === "EXNESS:XAUUSDm") return -1;
+      if (b.id === "EXNESS:XAUUSDm") return 1;
+      if (a.venue === "EXNESS" && a.base_key === "XAUUSD") return -1;
+      if (b.venue === "EXNESS" && b.base_key === "XAUUSD") return 1;
+      return 0;
     })
     .slice(0, 80);
+}
+
+async function fetchSymbolSearch(query) {
+  const q = (query || "").trim();
+  const url = q
+    ? `/api/symbols?q=${encodeURIComponent(q)}&_ts=${Date.now()}`
+    : `/api/symbols?_ts=${Date.now()}`;
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) throw new Error("Symbol search failed");
+  const data = await res.json();
+  symbolCatalog = data.symbols || [];
+  return symbolCatalog;
 }
 
 function renderSymbolList() {
@@ -714,14 +751,24 @@ function selectSymbol(id, { reload = true } = {}) {
 }
 
 async function loadSymbolCatalog() {
-  const res = await fetch("/api/symbols", { cache: "no-store" });
-  const data = await res.json();
-  symbolCatalog = data.symbols || [];
+  await fetchSymbolSearch("");
   const initial =
     symbolCatalog.find((s) => s.id === "BINANCE:BTCUSDT") ||
-    symbolCatalog.find((s) => s.id === data.default) ||
+    symbolCatalog.find((s) => s.id === "EXNESS:XAUUSDm") ||
     symbolCatalog[0];
   if (initial) selectSymbol(initial.id, { reload: false });
+}
+
+function scheduleSymbolSearch(query) {
+  clearTimeout(symbolSearchTimer);
+  symbolSearchTimer = setTimeout(async () => {
+    try {
+      await fetchSymbolSearch(query);
+      renderSymbolList();
+    } catch (err) {
+      console.error(err);
+    }
+  }, query ? 180 : 0);
 }
 
 function wireInstrumentSearch() {
@@ -730,6 +777,7 @@ function wireInstrumentSearch() {
   els.instrumentSearch.addEventListener("focus", () => {
     symbolFilter = "";
     highlightIndex = 0;
+    scheduleSymbolSearch("");
     renderSymbolList();
     els.instrumentSearch.select();
   });
@@ -737,6 +785,7 @@ function wireInstrumentSearch() {
   els.instrumentSearch.addEventListener("input", () => {
     symbolFilter = els.instrumentSearch.value;
     highlightIndex = 0;
+    scheduleSymbolSearch(symbolFilter);
     renderSymbolList();
   });
 

@@ -46,6 +46,23 @@ def test_catalog_has_multiple_venues():
     assert "YAHOO" in venues
 
 
+def test_exness_symbol_without_m_suffix():
+    ms = parse_symbol_id("EXNESS:XAUUSD")
+    assert ms.venue == "EXNESS"
+    assert ms.symbol == "XAUUSDm"
+
+
+def test_search_xauusd_exness_tokenized():
+    rows = search_symbols("xauusd exness")
+    ids = [r["id"] for r in rows]
+    assert "EXNESS:XAUUSDm" in ids
+
+
+def test_search_gold_prefers_exness():
+    rows = search_symbols("gold")
+    assert rows[0]["id"] == "EXNESS:XAUUSDm"
+
+
 def test_search_btc_returns_binance_and_exness():
     rows = search_symbols("btc")
     ids = {r["id"] for r in rows}

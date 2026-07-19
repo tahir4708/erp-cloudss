@@ -2,7 +2,7 @@ const $ = (id) => document.getElementById(id);
 
 const els = {
   btn: $("analyzeBtn"),
-  instrument: $("instrument"),
+  symbolId: $("symbolId"),
   instrumentSearch: $("instrumentSearch"),
   instrumentList: $("instrumentList"),
   quotePair: $("quotePair"),
@@ -13,6 +13,7 @@ const els = {
   quoteExnessPrice: $("quoteExnessPrice"),
   quoteDiff: $("quoteDiff"),
   priceSource: $("priceSource"),
+  priceSourceWrap: $("priceSourceWrap"),
   mode: $("mode"),
   interval: $("interval"),
   balance: $("balance"),
@@ -45,8 +46,8 @@ const els = {
 
 let lastSignal = null;
 let fetching = false;
-let instrumentCatalog = [];
-let instrumentFilter = "";
+let symbolCatalog = [];
+let symbolFilter = "";
 let highlightIndex = -1;
 
 let chart = null;
@@ -67,40 +68,62 @@ let lastBar = null;
 let lastUiTickMs = 0;
 let liveSource = "";
 
-const EXNESS_INSTRUMENTS = new Set(["XAUUSD", "BTCUSD"]);
+const EXNESS_BASE_KEYS = new Set(["XAUUSD", "BTCUSD"]);
 
-function isExnessInstrument(key) {
-  return EXNESS_INSTRUMENTS.has((key || "").toUpperCase());
+const VENUE_CLASS = { BINANCE: "binance", EXNESS: "exness", YAHOO: "yahoo" };
+
+function venueBadge(venue) {
+  const cls = VENUE_CLASS[venue] || "binance";
+  return `<span class="venue-badge ${cls}">${venue}</span>`;
+}
+
+function isExnessBaseKey(key) {
+  return EXNESS_BASE_KEYS.has((key || "").toUpperCase());
+}
+
+function currentSymbolId() {
+  return els.symbolId?.value || "BINANCE:BTCUSDT";
+}
+
+function symbolMeta(id) {
+  return symbolCatalog.find((s) => s.id === id) || null;
+}
+
+function currentMeta() {
+  return symbolMeta(currentSymbolId());
 }
 
 function syncPriceSourceUi() {
-  const key = currentInstrument();
-  const show = isExnessInstrument(key);
-  if (els.exnessBlock) els.exnessBlock.hidden = !show;
+  const meta = currentMeta();
+  const venue = meta?.venue || "BINANCE";
+  const showExnessOption = venue !== "EXNESS" && isExnessBaseKey(meta?.base_key);
+  if (els.priceSourceWrap) {
+    els.priceSourceWrap.hidden = venue === "EXNESS";
+  }
+  if (els.exnessBlock) {
+    els.exnessBlock.hidden = !isExnessBaseKey(meta?.base_key);
+  }
   if (els.priceSource) {
-    els.priceSource.disabled = !show;
-    if (!show) els.priceSource.value = "chart";
+    if (venue === "EXNESS") {
+      els.priceSource.value = "exness";
+      els.priceSource.disabled = true;
+    } else {
+      els.priceSource.disabled = !showExnessOption;
+      if (!showExnessOption) els.priceSource.value = "chart";
+    }
   }
 }
 
-function currentInstrument() {
-  return (els.instrument?.value || "BTCUSD").toUpperCase();
-}
-
-function instrumentMeta(key) {
-  return instrumentCatalog.find((i) => i.key === key) || null;
-}
-
 async function refreshBrokerCompare() {
-  const instrument = currentInstrument();
-  if (!isExnessInstrument(instrument)) {
+  const meta = currentMeta();
+  if (!meta || !isExnessBaseKey(meta.base_key)) {
     if (els.exnessBlock) els.exnessBlock.hidden = true;
     return;
   }
   if (els.exnessBlock) els.exnessBlock.hidden = false;
   try {
     const res = await fetch(
-      `/api/broker/compare?instrument=${encodeURIComponent(instrument)}&_ts=${Date.now()}`,
+      `/api/broker/compare?instrument=${encodeURIComponent(meta.base_key)}&_ts=${Date.now()}`,
       { cache: "no-store" }
     );
     if (!res.ok) return;
@@ -124,9 +147,9 @@ async function refreshBrokerCompare() {
   }
 }
 
-function hasLiveFeed(key) {
-  const meta = instrumentMeta(key);
-  return Boolean(meta?.live ?? meta?.binance);
+function hasLiveFeed(symbolId) {
+  const meta = symbolMeta(symbolId);
+  return Boolean(meta?.live);
 }
 
 function showToast(message) {
@@ -336,9 +359,9 @@ function fmtPrice(p) {
 }
 
 function updateMarketQuote({ price, changePct, label } = {}) {
-  const meta = instrumentMeta(currentInstrument());
+  const meta = currentMeta();
   if (els.quotePair) {
-    els.quotePair.textContent = label || meta?.label || currentInstrument();
+    els.quotePair.textContent = label || meta?.display || meta?.label || currentSymbolId();
   }
   if (price != null && Number.isFinite(+price) && els.quotePrice) {
     els.quotePrice.textContent = fmtPrice(+price);
@@ -402,7 +425,7 @@ function applyTick(price, changePct) {
   const now = Date.now();
   if (now - lastUiTickMs >= 80) {
     lastUiTickMs = now;
-    const sym = lastSignal?.symbol || els.instrument.value;
+    const sym = lastSignal?.symbol || currentMeta()?.label || currentSymbolId();
     const src = liveSource ? ` · ${liveSource}` : "";
     els.caption.textContent = `${sym} · ${fmtPrice(price)} · live${src}`;
     if (els.live) els.live.textContent = `Live · ${fmtPrice(price)}`;
@@ -417,10 +440,11 @@ function stopRealtime() {
 }
 
 function startRealtime() {
-  const instrument = currentInstrument();
-  if (!hasLiveFeed(instrument)) {
+  const symbolId = currentSymbolId();
+  if (!hasLiveFeed(symbolId)) {
     stopRealtime();
-    els.caption.textContent = `${instrument} · no sub-second live feed — click Analyze`;
+    const meta = currentMeta();
+    els.caption.textContent = `${meta?.display || symbolId} · click Analyze for chart`;
     return;
   }
 
@@ -428,12 +452,12 @@ function startRealtime() {
   const tickOnce = async () => {
     try {
       const res = await fetch(
-        `/api/live/ticker?instrument=${encodeURIComponent(instrument)}&_ts=${Date.now()}`,
+        `/api/live/ticker?symbol_id=${encodeURIComponent(symbolId)}&_ts=${Date.now()}`,
         { cache: "no-store" }
       );
       if (!res.ok) return;
       const data = await res.json();
-      liveSource = data.source || "binance";
+      liveSource = data.source || data.venue?.toLowerCase() || "binance";
       applyTick(+data.price, data.change_pct != null ? +data.change_pct : undefined);
     } catch (_) {
       /* keep last price; next tick retries */
@@ -450,19 +474,20 @@ function startRealtime() {
 
 /** Seed the chart from Binance candles, then stream live ticks. */
 async function loadChartSeed() {
-  const instrument = currentInstrument();
+  const symbolId = currentSymbolId();
   const interval = els.interval.value;
+  const meta = currentMeta();
 
-  if (!hasLiveFeed(instrument)) {
+  if (!hasLiveFeed(symbolId)) {
     destroyChart();
-    els.caption.textContent = `${instrument} · click Analyze to load chart`;
+    els.caption.textContent = `${meta?.display || symbolId} · click Analyze to load chart`;
     return;
   }
 
-  els.caption.textContent = `${instrument} · loading live chart…`;
+  els.caption.textContent = `${meta?.display || symbolId} · loading chart…`;
   try {
     const res = await fetch(
-      `/api/live/klines?instrument=${encodeURIComponent(instrument)}` +
+      `/api/live/klines?symbol_id=${encodeURIComponent(symbolId)}` +
         `&interval=${encodeURIComponent(interval)}&limit=80&_ts=${Date.now()}`,
       { cache: "no-store" }
     );
@@ -476,8 +501,8 @@ async function loadChartSeed() {
     startRealtime();
   } catch (err) {
     console.error(err);
-    els.caption.textContent = `${instrument} · live chart unavailable — ${err.message}`;
-    showToast(err.message || "Live chart unavailable");
+    els.caption.textContent = `${meta?.display || symbolId} · chart unavailable — ${err.message}`;
+    showToast(err.message || "Chart unavailable");
   }
 }
 
@@ -589,7 +614,7 @@ async function analyze() {
   fetching = true;
 
   const interval = els.interval.value;
-  const instrument = currentInstrument();
+  const symbolId = currentSymbolId();
   const mode = els.mode.value;
   const price_source = els.priceSource?.value || "chart";
   const account_balance = Number(els.balance.value) || 1000;
@@ -602,7 +627,7 @@ async function analyze() {
   try {
     const params = new URLSearchParams({
       interval,
-      instrument,
+      symbol_id: symbolId,
       mode,
       price_source,
       account_balance: String(account_balance),
@@ -627,48 +652,48 @@ async function analyze() {
   }
 }
 
-function filteredInstruments() {
-  const q = instrumentFilter.trim().toLowerCase();
-  if (!q) return instrumentCatalog.slice(0, 60);
-  return instrumentCatalog
-    .filter((i) => {
-      const hay = `${i.key} ${i.label} ${i.name} ${i.keywords || ""} ${i.binance || ""}`.toLowerCase();
+function filteredSymbols() {
+  const q = symbolFilter.trim().toLowerCase();
+  if (!q) return symbolCatalog.slice(0, 60);
+  return symbolCatalog
+    .filter((s) => {
+      const hay = `${s.id} ${s.venue} ${s.symbol} ${s.label} ${s.name} ${s.keywords || ""} ${s.display || ""}`.toLowerCase();
       return hay.includes(q);
     })
     .slice(0, 80);
 }
 
-function renderInstrumentList() {
-  const rows = filteredInstruments();
+function renderSymbolList() {
+  const rows = filteredSymbols();
   if (!els.instrumentList) return;
   if (!rows.length) {
-    els.instrumentList.innerHTML = `<li class="empty">No markets match “${instrumentFilter}”</li>`;
+    els.instrumentList.innerHTML = `<li class="empty">No symbols match “${symbolFilter}”</li>`;
     els.instrumentList.hidden = false;
     highlightIndex = -1;
     return;
   }
   els.instrumentList.innerHTML = rows
-    .map((i, idx) => {
-      const live = i.live ? "Binance" : "Analyze only";
+    .map((s, idx) => {
+      const live = s.live ? "Live" : "Delayed";
       const active = idx === highlightIndex ? "active" : "";
-      return `<li class="${active}" data-key="${i.key}" role="option">
-        <span class="pair">${i.label}</span>
-        <span class="meta">${i.name} · ${live}</span>
+      return `<li class="${active}" data-id="${s.id}" role="option">
+        <span class="pair">${venueBadge(s.venue)}${s.label}</span>
+        <span class="meta">${s.name} · ${live}</span>
       </li>`;
     })
     .join("");
   els.instrumentList.hidden = false;
 }
 
-function selectInstrument(key, { reload = true } = {}) {
-  const meta = instrumentMeta(key) || { key, label: key, name: key };
-  els.instrument.value = meta.key;
+function selectSymbol(id, { reload = true } = {}) {
+  const meta = symbolMeta(id) || { id, label: id, name: id, display: id, venue: "BINANCE" };
+  els.symbolId.value = meta.id;
   if (els.instrumentSearch) {
-    els.instrumentSearch.value = `${meta.label} · ${meta.name}`;
+    els.instrumentSearch.value = `${meta.venue} · ${meta.label} — ${meta.name}`;
   }
   if (els.instrumentList) els.instrumentList.hidden = true;
   highlightIndex = -1;
-  updateMarketQuote({ label: meta.label });
+  updateMarketQuote({ label: meta.display || `${meta.venue} · ${meta.label}` });
   if (els.quotePrice) els.quotePrice.textContent = "—";
   if (els.quoteChange) {
     els.quoteChange.textContent = "—";
@@ -688,54 +713,57 @@ function selectInstrument(key, { reload = true } = {}) {
   }
 }
 
-async function loadInstrumentCatalog() {
-  const res = await fetch("/api/instruments", { cache: "no-store" });
+async function loadSymbolCatalog() {
+  const res = await fetch("/api/symbols", { cache: "no-store" });
   const data = await res.json();
-  instrumentCatalog = data.instruments || [];
-  const initial = instrumentCatalog.find((i) => i.key === "BTCUSD") || instrumentCatalog[0];
-  if (initial) selectInstrument(initial.key, { reload: false });
+  symbolCatalog = data.symbols || [];
+  const initial =
+    symbolCatalog.find((s) => s.id === "BINANCE:BTCUSDT") ||
+    symbolCatalog.find((s) => s.id === data.default) ||
+    symbolCatalog[0];
+  if (initial) selectSymbol(initial.id, { reload: false });
 }
 
 function wireInstrumentSearch() {
   if (!els.instrumentSearch || !els.instrumentList) return;
 
   els.instrumentSearch.addEventListener("focus", () => {
-    instrumentFilter = "";
+    symbolFilter = "";
     highlightIndex = 0;
-    renderInstrumentList();
+    renderSymbolList();
     els.instrumentSearch.select();
   });
 
   els.instrumentSearch.addEventListener("input", () => {
-    instrumentFilter = els.instrumentSearch.value;
+    symbolFilter = els.instrumentSearch.value;
     highlightIndex = 0;
-    renderInstrumentList();
+    renderSymbolList();
   });
 
   els.instrumentSearch.addEventListener("keydown", (e) => {
-    const rows = filteredInstruments();
+    const rows = filteredSymbols();
     if (e.key === "ArrowDown") {
       e.preventDefault();
       highlightIndex = Math.min(highlightIndex + 1, rows.length - 1);
-      renderInstrumentList();
+      renderSymbolList();
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       highlightIndex = Math.max(highlightIndex - 1, 0);
-      renderInstrumentList();
+      renderSymbolList();
     } else if (e.key === "Enter") {
       e.preventDefault();
       const pick = rows[Math.max(0, highlightIndex)];
-      if (pick) selectInstrument(pick.key);
+      if (pick) selectSymbol(pick.id);
     } else if (e.key === "Escape") {
       els.instrumentList.hidden = true;
     }
   });
 
   els.instrumentList.addEventListener("mousedown", (e) => {
-    const li = e.target.closest("li[data-key]");
+    const li = e.target.closest("li[data-id]");
     if (!li) return;
     e.preventDefault();
-    selectInstrument(li.dataset.key);
+    selectSymbol(li.dataset.id);
   });
 
   document.addEventListener("click", (e) => {
@@ -757,10 +785,10 @@ els.interval.addEventListener("change", () => {
 });
 
 wireInstrumentSearch();
-loadInstrumentCatalog()
+loadSymbolCatalog()
   .then(() => loadChartSeed())
   .catch((err) => {
     console.error(err);
-    showToast("Could not load instrument list");
+    showToast("Could not load symbol list");
     loadChartSeed();
   });

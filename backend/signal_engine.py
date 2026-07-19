@@ -14,6 +14,8 @@ from backend.data_feed import candles_to_list, fetch_ohlcv
 from backend.indicators import PATTERN_LIBRARY, enrich, latest_snapshot, safe_nan
 from backend.exness_feed import exness_entry_price, supports_exness
 from backend.live_feed import fetch_live_ticker, has_live_feed
+from backend.market_data import fetch_market_ohlcv
+from backend.symbol_catalog import MarketSymbol, parse_symbol_id
 
 PriceSource = Literal["chart", "exness"]
 
@@ -44,6 +46,8 @@ class TradeSignal:
     risk_reward: float
     atr: float
     timeframe: str
+    symbol_id: str = ""
+    venue: str = ""
     analysis_mode: str = "indicators"
     price_source: str = "chart"
     broker_quote: dict[str, Any] | None = None
@@ -410,18 +414,39 @@ def _tp_sl(side: Side, entry: float, atr: float, snap: dict) -> tuple[float, flo
     return round(stop_loss, 2), round(take_profit, 2), round(rr, 2)
 
 
+def _resolve_market(
+    instrument: str | None,
+    symbol_id: str | None,
+) -> tuple[MarketSymbol, str, PriceSource]:
+    """Resolve catalog symbol and effective entry price source."""
+    ms = parse_symbol_id(symbol_id or instrument)
+    inst = ms.base_key
+    if ms.venue == "EXNESS":
+        src: PriceSource = "exness"
+    else:
+        src = "chart"
+    return ms, inst, src
+
+
 def analyze_xauusd(
     interval: str = "15m",
     account_balance: float | None = None,
     risk_percent: float | None = None,
     instrument: str | None = None,
+    symbol_id: str | None = None,
     mode: AnalysisMode = "indicators",
     price_source: PriceSource = "chart",
 ) -> TradeSignal:
-    """Run full analysis and return a trade signal for the given instrument."""
+    """Run full analysis and return a trade signal for the given symbol."""
+    ms, inst, venue_src = _resolve_market(instrument, symbol_id)
+    effective_source: PriceSource = venue_src if ms.venue == "EXNESS" else price_source
     if mode == "candles":
-        return _analyze_candles(interval, account_balance, risk_percent, instrument, price_source)
-    return _analyze_indicators(interval, account_balance, risk_percent, instrument, price_source)
+        return _analyze_candles(
+            interval, account_balance, risk_percent, inst, effective_source, ms
+        )
+    return _analyze_indicators(
+        interval, account_balance, risk_percent, inst, effective_source, ms
+    )
 
 
 def _apply_entry_source(
@@ -489,17 +514,18 @@ def _analyze_indicators(
     risk_percent: float | None,
     instrument: str | None,
     price_source: PriceSource = "chart",
+    market: MarketSymbol | None = None,
 ) -> TradeSignal:
     """Indicator-based confluence analysis."""
     balance = account_balance if account_balance is not None else settings.account_balance
     risk_pct = risk_percent if risk_percent is not None else settings.max_risk_percent
 
-    inst = get_instrument(instrument)
-    yahoo_symbol = str(inst["symbol"])
-    display_symbol = str(inst["display_symbol"])
-    contract_size = float(inst["contract_size"])
+    ms = market or parse_symbol_id(instrument)
+    inst_cfg = get_instrument(ms.base_key)
+    display_symbol = f"{ms.venue} · {ms.label}"
+    contract_size = float(inst_cfg["contract_size"])
 
-    raw = fetch_ohlcv(interval=interval, symbol=yahoo_symbol, instrument=instrument)
+    raw = fetch_market_ohlcv(ms.id, interval=interval)
     df = enrich(raw)
     df = df.dropna()
     if len(df) < 60:
@@ -519,7 +545,7 @@ def _analyze_indicators(
 
     sl0, tp0, _ = _tp_sl(side, candle_entry, atr, snap)
     entry, stop_loss, take_profit, rr, broker_meta = _finalize_levels(
-        instrument, candle_entry, sl0, tp0, price_source
+        ms.base_key, candle_entry, sl0, tp0, price_source
     )
     lot, risk_amount = _lot_size(
         side, entry, stop_loss, confidence, balance, risk_pct, contract_size
@@ -537,6 +563,8 @@ def _analyze_indicators(
 
     return TradeSignal(
         symbol=display_symbol,
+        symbol_id=ms.id,
+        venue=ms.venue,
         side=side,
         lot_size=lot,
         entry=entry,
@@ -578,17 +606,18 @@ def _analyze_candles(
     risk_percent: float | None,
     instrument: str | None,
     price_source: PriceSource = "chart",
+    market: MarketSymbol | None = None,
 ) -> TradeSignal:
     """Pure candlestick / price-action analysis (no RSI, MACD, EMA, etc.)."""
     balance = account_balance if account_balance is not None else settings.account_balance
     risk_pct = risk_percent if risk_percent is not None else settings.max_risk_percent
 
-    inst = get_instrument(instrument)
-    yahoo_symbol = str(inst["symbol"])
-    display_symbol = str(inst["display_symbol"])
-    contract_size = float(inst["contract_size"])
+    ms = market or parse_symbol_id(instrument)
+    inst_cfg = get_instrument(ms.base_key)
+    display_symbol = f"{ms.venue} · {ms.label}"
+    contract_size = float(inst_cfg["contract_size"])
 
-    raw = fetch_ohlcv(interval=interval, symbol=yahoo_symbol, instrument=instrument)
+    raw = fetch_market_ohlcv(ms.id, interval=interval)
     df = raw.dropna()
     if len(df) < 30:
         raise RuntimeError("Not enough candle data to analyze. Try a higher timeframe.")
@@ -609,7 +638,7 @@ def _analyze_candles(
     }
     sl0, tp0, _ = _tp_sl(side, candle_entry, avg_rng, tp_snap)
     entry, stop_loss, take_profit, rr, broker_meta = _finalize_levels(
-        instrument, candle_entry, sl0, tp0, price_source
+        ms.base_key, candle_entry, sl0, tp0, price_source
     )
     lot, risk_amount = _lot_size(
         side, entry, stop_loss, confidence, balance, risk_pct, contract_size
@@ -628,6 +657,8 @@ def _analyze_candles(
 
     return TradeSignal(
         symbol=display_symbol,
+        symbol_id=ms.id,
+        venue=ms.venue,
         side=side,
         lot_size=lot,
         entry=entry,

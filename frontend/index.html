@@ -33,12 +33,12 @@
         <input
           id="instrumentSearch"
           type="search"
-          placeholder="Search BTC, ETH, SOL, Gold…"
+          placeholder="Search Binance, Exness, Yahoo — e.g. BTC, Gold…"
           autocomplete="off"
           spellcheck="false"
-          aria-label="Search instrument"
+          aria-label="Search symbol"
         />
-        <input type="hidden" id="instrument" value="BTCUSD" />
+        <input type="hidden" id="symbolId" value="BINANCE:BTCUSDT" />
         <ul id="instrumentList" class="search-select-list" hidden></ul>
       </div>
       <div class="market-quote" id="marketQuote">
@@ -68,10 +68,10 @@
           lot size, TP/SL, and win probability.
         </p>
         <div class="controls">
-          <label>
+          <label id="priceSourceWrap">
             Entry price
             <select id="priceSource">
-              <option value="chart">Chart feed (Binance)</option>
+              <option value="chart">Chart feed</option>
               <option value="exness">Exness broker</option>
             </select>
           </label>

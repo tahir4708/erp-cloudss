@@ -14,8 +14,9 @@ from pydantic import BaseModel, Field, field_validator
 
 from backend.config import DEFAULT_INSTRUMENT, INSTRUMENTS, is_known_instrument, settings
 from backend.exness_feed import compare_prices, fetch_exness_quote, supports_exness
-from backend.live_feed import fetch_live_klines, fetch_live_ticker, has_live_feed
+from backend.market_data import fetch_market_klines, fetch_market_ticker
 from backend.signal_engine import analyze_xauusd, quick_backtest_hint
+from backend.symbol_catalog import DEFAULT_SYMBOL_ID, is_known_symbol, parse_symbol_id, search_symbols
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -56,16 +57,28 @@ def _require_instrument(instrument: str) -> str:
     return key
 
 
+def _require_symbol(symbol_id: str | None, instrument: str | None = None) -> str:
+    """Resolve symbol_id from explicit id or legacy instrument key."""
+    raw = (symbol_id or "").strip()
+    if raw:
+        if not is_known_symbol(raw):
+            raise HTTPException(status_code=400, detail=f"Unknown symbol: {raw}")
+        return parse_symbol_id(raw).id
+    key = _require_instrument(instrument or DEFAULT_INSTRUMENT)
+    return parse_symbol_id(key).id
+
+
 class AnalyzeRequest(BaseModel):
     interval: str = Field(default="15m", description="Candle timeframe")
     account_balance: float = Field(default=1000.0, gt=0, description="Account balance in USD")
     risk_percent: float = Field(default=2.0, gt=0, le=5, description="Max risk % per trade")
-    instrument: str = Field(default=DEFAULT_INSTRUMENT, description="Instrument key")
+    instrument: str = Field(default=DEFAULT_INSTRUMENT, description="Legacy instrument key")
+    symbol_id: str | None = Field(default=None, description="TradingView-style VENUE:SYMBOL")
     mode: str = Field(default="indicators", pattern="^(indicators|candles)$")
     price_source: str = Field(
         default="chart",
         pattern="^(chart|exness)$",
-        description="Entry price: chart feed (Binance) or Exness broker",
+        description="Entry price: chart feed or Exness broker (Binance/Yahoo charts only)",
     )
 
     @field_validator("instrument")
@@ -80,6 +93,13 @@ class AnalyzeRequest(BaseModel):
 @app.get("/api/health")
 def health():
     return {"status": "ok", "symbol": settings.display_symbol, "instruments": len(INSTRUMENTS)}
+
+
+@app.get("/api/symbols")
+def symbols(q: str | None = Query(default=None, description="Search Binance, Exness, Yahoo")):
+    """TradingView-style catalog: BINANCE:BTCUSDT, EXNESS:BTCUSDm, YAHOO:GC=F, …"""
+    rows = search_symbols(q)
+    return {"symbols": rows, "count": len(rows), "default": DEFAULT_SYMBOL_ID}
 
 
 @app.get("/api/instruments")
@@ -152,28 +172,30 @@ def get_signal(
     account_balance: float = Query(default=1000.0, gt=0),
     risk_percent: float = Query(default=2.0, gt=0, le=5),
     instrument: str = Query(default=DEFAULT_INSTRUMENT),
+    symbol_id: str | None = Query(default=None, description="VENUE:SYMBOL e.g. BINANCE:BTCUSDT"),
     mode: str = Query(default="indicators", pattern="^(indicators|candles)$"),
     price_source: str = Query(default="chart", pattern="^(chart|exness)$"),
 ):
-    instrument = _require_instrument(instrument)
-    if price_source == "exness" and not supports_exness(instrument):
+    sid = _require_symbol(symbol_id, instrument)
+    ms = parse_symbol_id(sid)
+    if price_source == "exness" and ms.venue != "EXNESS" and not supports_exness(ms.base_key):
         raise HTTPException(
             status_code=400,
-            detail=f"Exness entry only for Gold (XAUUSD) and BTC (BTCUSD)",
+            detail="Exness entry only for Gold (XAUUSD) and BTC (BTCUSD)",
         )
     try:
         signal = analyze_xauusd(
             interval=interval,
             account_balance=account_balance,
             risk_percent=risk_percent,
-            instrument=instrument,
+            symbol_id=sid,
             mode=mode,  # type: ignore[arg-type]
             price_source=price_source,  # type: ignore[arg-type]
         )
         payload = signal.to_dict()
-        if supports_exness(instrument):
+        if supports_exness(ms.base_key):
             try:
-                payload["broker_compare"] = compare_prices(instrument)
+                payload["broker_compare"] = compare_prices(ms.base_key)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Broker compare failed: %s", exc)
                 payload["broker_compare"] = None
@@ -185,7 +207,7 @@ def get_signal(
         else:
             try:
                 payload["recent_edge"] = quick_backtest_hint(
-                    interval=interval, instrument=instrument
+                    interval=interval, instrument=ms.base_key
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Backtest hint failed: %s", exc)
@@ -203,6 +225,7 @@ def post_signal(body: AnalyzeRequest):
         account_balance=body.account_balance,
         risk_percent=body.risk_percent,
         instrument=body.instrument,
+        symbol_id=body.symbol_id,
         mode=body.mode,
         price_source=body.price_source,
     )
@@ -235,13 +258,14 @@ def broker_exness_quote(instrument: str = Query(default="XAUUSD")):
 
 
 @app.get("/api/live/ticker")
-def live_ticker(instrument: str = Query(default=DEFAULT_INSTRUMENT)):
-    """Fresh last price for the live chart (Binance)."""
-    instrument = _require_instrument(instrument)
-    if not has_live_feed(instrument):
-        raise HTTPException(status_code=400, detail=f"No live Binance feed for {instrument}")
+def live_ticker(
+    instrument: str = Query(default=DEFAULT_INSTRUMENT),
+    symbol_id: str | None = Query(default=None, description="VENUE:SYMBOL"),
+):
+    """Fresh last price for the live chart."""
+    sid = _require_symbol(symbol_id, instrument)
     try:
-        return fetch_live_ticker(instrument)
+        return fetch_market_ticker(sid)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Live ticker failed: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -250,16 +274,22 @@ def live_ticker(instrument: str = Query(default=DEFAULT_INSTRUMENT)):
 @app.get("/api/live/klines")
 def live_klines(
     instrument: str = Query(default=DEFAULT_INSTRUMENT),
+    symbol_id: str | None = Query(default=None, description="VENUE:SYMBOL"),
     interval: str = Query(default="15m", pattern="^(1m|5m|15m|30m|1h|4h|1d)$"),
     limit: int = Query(default=80, ge=20, le=200),
 ):
-    """OHLCV seed candles for the live chart (Binance)."""
-    instrument = _require_instrument(instrument)
-    if not has_live_feed(instrument):
-        raise HTTPException(status_code=400, detail=f"No live Binance feed for {instrument}")
+    """OHLCV seed candles for the live chart."""
+    sid = _require_symbol(symbol_id, instrument)
     try:
-        candles = fetch_live_klines(instrument, interval=interval, limit=limit)
-        return {"instrument": instrument, "interval": interval, "candles": candles}
+        candles = fetch_market_klines(sid, interval=interval, limit=limit)
+        ms = parse_symbol_id(sid)
+        return {
+            "symbol_id": sid,
+            "instrument": ms.base_key,
+            "venue": ms.venue,
+            "interval": interval,
+            "candles": candles,
+        }
     except Exception as exc:  # noqa: BLE001
         logger.warning("Live klines failed: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc

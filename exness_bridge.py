@@ -31,6 +31,24 @@ app = FastAPI(title="Exness MT5 Bridge", version="1.0.0")
 
 SYMBOLS = ("XAUUSDm", "BTCUSDm")
 
+_INTERVAL_MAP: dict[str, int] = {}
+
+
+def _interval_map() -> dict[str, int]:
+    if not _INTERVAL_MAP and mt5 is not None:
+        _INTERVAL_MAP.update(
+            {
+                "1m": mt5.TIMEFRAME_M1,
+                "5m": mt5.TIMEFRAME_M5,
+                "15m": mt5.TIMEFRAME_M15,
+                "30m": mt5.TIMEFRAME_M30,
+                "1h": mt5.TIMEFRAME_H1,
+                "4h": mt5.TIMEFRAME_H4,
+                "1d": mt5.TIMEFRAME_D1,
+            }
+        )
+    return _INTERVAL_MAP
+
 
 def _ensure_mt5() -> None:
     if mt5 is None:
@@ -45,6 +63,41 @@ def _ensure_mt5() -> None:
 @app.get("/health")
 def health():
     return {"status": "ok", "symbols": list(SYMBOLS)}
+
+
+@app.get("/klines/{symbol}")
+def klines(
+    symbol: str,
+    interval: str = "15m",
+    limit: int = 200,
+):
+    """OHLCV from MT5 (requires MetaTrader5 package on Windows)."""
+    sym = symbol.upper()
+    if sym not in SYMBOLS and not sym.endswith("M"):
+        sym = f"{sym}m" if sym in ("XAUUSD", "BTCUSD") else sym
+    _ensure_mt5()
+    if not mt5.symbol_select(sym, True):
+        raise HTTPException(status_code=404, detail=f"Symbol {sym} not found in MT5")
+
+    tf = _interval_map().get(interval, mt5.TIMEFRAME_M15)
+    lim = max(10, min(int(limit), 500))
+    rates = mt5.copy_rates_from_pos(sym, tf, 0, lim)
+    if rates is None or len(rates) == 0:
+        raise HTTPException(status_code=404, detail=f"No bars for {sym}")
+
+    candles = []
+    for r in rates:
+        candles.append(
+            {
+                "time": int(r["time"]),
+                "open": float(r["open"]),
+                "high": float(r["high"]),
+                "low": float(r["low"]),
+                "close": float(r["close"]),
+                "volume": float(r["tick_volume"]),
+            }
+        )
+    return {"symbol": sym, "interval": interval, "candles": candles}
 
 
 @app.get("/quote/{symbol}")

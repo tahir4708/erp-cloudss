@@ -115,27 +115,104 @@ body {
   text-transform: uppercase;
 }
 
-main {
-  width: min(1180px, 92vw);
+.market-bar {
+  padding: 0.85rem 4vw 0;
+}
+
+.market-bar-inner {
+  width: min(1440px, 96vw);
   margin: 0 auto;
-  padding: 1.5rem 0 3.5rem;
+  display: flex;
+  align-items: stretch;
+  gap: 0.85rem;
+  flex-wrap: wrap;
+}
+
+.market-bar .search-select {
+  flex: 1 1 280px;
+  min-width: min(100%, 240px);
+}
+
+.market-bar .search-select input[type="search"] {
+  width: 100%;
+  font: inherit;
+  border: 1px solid var(--line);
+  background: #ffffff;
+  color: var(--ink);
+  padding: 0.75rem 0.9rem;
+  border-radius: 4px;
+}
+
+.market-quote {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  flex: 0 1 auto;
+  padding: 0.55rem 1rem;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.92);
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.quote-pair {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+}
+
+.quote-price {
+  font-family: var(--serif);
+  font-size: 1.45rem;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: 0.02em;
+}
+
+.quote-change {
+  font-size: 0.9rem;
+  font-weight: 600;
+  padding: 0.2rem 0.55rem;
+  border-radius: 4px;
+}
+
+.quote-change.up {
+  color: var(--buy);
+  background: rgba(31, 157, 95, 0.12);
+}
+
+.quote-change.down {
+  color: var(--sell);
+  background: rgba(210, 63, 47, 0.12);
+}
+
+.quote-change.flat {
+  color: var(--ink-soft);
+  background: rgba(120, 90, 30, 0.08);
+}
+
+main {
+  width: min(1440px, 96vw);
+  margin: 0 auto;
+  padding: 1rem 0 2.5rem;
 }
 
 .hero {
   display: grid;
-  grid-template-columns: 1.05fr 1.2fr;
-  gap: 2rem;
-  align-items: end;
-  min-height: calc(100vh - 6rem);
-  padding-bottom: 1.5rem;
+  grid-template-columns: minmax(260px, 0.85fr) minmax(0, 1.65fr);
+  gap: 1.5rem;
+  align-items: stretch;
+  min-height: auto;
+  padding-bottom: 1rem;
 }
 
 .hero-copy h1 {
-  margin: 0.2rem 0 0.6rem;
+  margin: 0.15rem 0 0.45rem;
   font-family: var(--serif);
-  font-size: clamp(4.5rem, 10vw, 7.5rem);
+  font-size: clamp(2.8rem, 5.5vw, 4.2rem);
   font-weight: 600;
-  line-height: 0.9;
+  line-height: 0.95;
   letter-spacing: 0.04em;
   color: var(--gold-bright);
   text-shadow: 0 0 40px rgba(212, 168, 75, 0.18);
@@ -150,9 +227,9 @@ main {
 
 .lede {
   max-width: 34ch;
-  margin: 0 0 1.6rem;
-  font-size: 1.05rem;
-  line-height: 1.55;
+  margin: 0 0 1.1rem;
+  font-size: 0.98rem;
+  line-height: 1.5;
   color: var(--ink-soft);
   animation: fadeUp 1s ease 0.1s both;
 }
@@ -208,6 +285,71 @@ main {
   transform: none;
 }
 
+.instrument-field {
+  grid-column: 1 / -1;
+}
+
+.search-select {
+  position: relative;
+}
+
+.search-select input[type="search"] {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.search-select-list {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 360px;
+  overflow: auto;
+  margin: 0;
+  padding: 0.35rem 0;
+  list-style: none;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 12px 28px rgba(30, 24, 10, 0.14);
+}
+
+.market-bar .search-select-list {
+  min-width: min(420px, 92vw);
+}
+
+.search-select-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.55rem 0.8rem;
+  cursor: pointer;
+  font-size: 0.92rem;
+}
+
+.search-select-list li:hover,
+.search-select-list li.active {
+  background: rgba(212, 168, 75, 0.14);
+}
+
+.search-select-list .pair {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.search-select-list .meta {
+  color: var(--muted, #7a7264);
+  font-size: 0.82rem;
+  text-align: right;
+}
+
+.search-select-list .empty {
+  padding: 0.75rem 0.9rem;
+  color: var(--muted, #7a7264);
+  cursor: default;
+}
+
 .controls .live-toggle {
   flex-direction: row;
   align-items: center;
@@ -231,7 +373,8 @@ main {
 
 .hero-chart-wrap {
   position: relative;
-  min-height: 420px;
+  min-height: 560px;
+  height: 100%;
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
   background:
@@ -242,7 +385,8 @@ main {
 
 #priceChart {
   width: 100%;
-  height: 460px;
+  height: min(68vh, 640px);
+  min-height: 520px;
   display: block;
 }
 
@@ -478,6 +622,11 @@ main {
   }
 
   .hero-copy h1 {
-    font-size: 4.2rem;
+    font-size: 3.2rem;
+  }
+
+  .market-quote {
+    width: 100%;
+    justify-content: space-between;
   }
 }

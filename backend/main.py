@@ -1,4 +1,4 @@
-"""FastAPI app for the XAU/USD trading signal bot."""
+"""FastAPI app for the multi-instrument signal bot."""
 
 from __future__ import annotations
 
@@ -10,9 +10,10 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from backend.config import INSTRUMENTS, settings
+from backend.config import DEFAULT_INSTRUMENT, INSTRUMENTS, is_known_instrument, settings
+from backend.live_feed import fetch_live_klines, fetch_live_ticker, has_live_feed
 from backend.signal_engine import analyze_xauusd, quick_backtest_hint
 
 logging.basicConfig(level=logging.INFO)
@@ -22,9 +23,9 @@ ROOT = Path(__file__).resolve().parent.parent
 FRONTEND = ROOT / "frontend"
 
 app = FastAPI(
-    title="XAU/USD Signal Bot",
-    description="Chart analysis signals for Gold (XAU/USD): side, entry, lot size, TP/SL, win %",
-    version="1.0.0",
+    title="AURUM Signal Desk",
+    description="Multi-instrument chart analysis: crypto (Binance) + gold/oil",
+    version="1.1.0",
 )
 
 app.add_middleware(
@@ -47,30 +48,96 @@ async def no_cache_api(request, call_next):
     return response
 
 
-_INSTRUMENT_PATTERN = "^(" + "|".join(INSTRUMENTS.keys()) + ")$"
+def _require_instrument(instrument: str) -> str:
+    key = (instrument or DEFAULT_INSTRUMENT).upper()
+    if not is_known_instrument(key):
+        raise HTTPException(status_code=400, detail=f"Unknown instrument: {instrument}")
+    return key
 
 
 class AnalyzeRequest(BaseModel):
     interval: str = Field(default="15m", description="Candle timeframe")
     account_balance: float = Field(default=1000.0, gt=0, description="Account balance in USD")
     risk_percent: float = Field(default=2.0, gt=0, le=5, description="Max risk % per trade")
-    instrument: str = Field(default="XAUUSD", description="Instrument key (XAUUSD, USOIL, BTCUSD)")
+    instrument: str = Field(default=DEFAULT_INSTRUMENT, description="Instrument key")
     mode: str = Field(default="indicators", pattern="^(indicators|candles)$")
+
+    @field_validator("instrument")
+    @classmethod
+    def _check_instrument(cls, value: str) -> str:
+        key = value.upper()
+        if not is_known_instrument(key):
+            raise ValueError(f"Unknown instrument: {value}")
+        return key
 
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "symbol": settings.display_symbol}
+    return {"status": "ok", "symbol": settings.display_symbol, "instruments": len(INSTRUMENTS)}
 
 
 @app.get("/api/instruments")
-def instruments():
-    return {
-        "instruments": [
-            {"key": key, "label": str(cfg["display_symbol"])}
-            for key, cfg in INSTRUMENTS.items()
-        ]
-    }
+def instruments(q: str | None = Query(default=None, description="Optional search filter")):
+    """Full searchable catalog: commodities + all Binance USDT spot pairs."""
+    from backend.live_feed import fetch_binance_usdt_markets
+
+    needle = (q or "").strip().lower()
+    by_key: dict[str, dict] = {}
+
+    for key, cfg in INSTRUMENTS.items():
+        label = str(cfg["display_symbol"])
+        name = str(cfg.get("name") or label)
+        category = str(cfg.get("category") or "other")
+        keywords = str(cfg.get("keywords") or "")
+        binance = cfg.get("binance")
+        by_key[key] = {
+            "key": key,
+            "label": label,
+            "name": name,
+            "category": category,
+            "binance": binance,
+            "live": bool(binance),
+            "keywords": keywords,
+        }
+
+    try:
+        for m in fetch_binance_usdt_markets():
+            key = str(m["key"])
+            if key in by_key:
+                # Keep curated name (e.g. Bitcoin) but ensure live flag
+                by_key[key]["live"] = True
+                by_key[key]["binance"] = by_key[key].get("binance") or m["binance"]
+                continue
+            by_key[key] = {
+                "key": key,
+                "label": m["label"],
+                "name": m["name"],
+                "category": "crypto",
+                "binance": m["binance"],
+                "live": True,
+                "keywords": m.get("keywords") or "",
+            }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Binance market catalog unavailable: %s", exc)
+
+    rows = []
+    for row in by_key.values():
+        hay = (
+            f"{row['key']} {row['label']} {row['name']} "
+            f"{row.get('keywords') or ''} {row.get('binance') or ''}"
+        ).lower()
+        if needle and needle not in hay:
+            continue
+        rows.append(row)
+
+    # Metals/energy first, then cryptos A–Z
+    rows.sort(
+        key=lambda r: (
+            0 if r["category"] in ("metals", "energy") else 1,
+            r["name"].lower(),
+        )
+    )
+    return {"instruments": rows, "count": len(rows)}
 
 
 @app.get("/api/signal")
@@ -78,9 +145,10 @@ def get_signal(
     interval: str = Query(default="15m", pattern="^(1m|5m|15m|30m|1h|4h|1d)$"),
     account_balance: float = Query(default=1000.0, gt=0),
     risk_percent: float = Query(default=2.0, gt=0, le=5),
-    instrument: str = Query(default="XAUUSD", pattern=_INSTRUMENT_PATTERN),
+    instrument: str = Query(default=DEFAULT_INSTRUMENT),
     mode: str = Query(default="indicators", pattern="^(indicators|candles)$"),
 ):
+    instrument = _require_instrument(instrument)
     try:
         signal = analyze_xauusd(
             interval=interval,
@@ -118,6 +186,37 @@ def post_signal(body: AnalyzeRequest):
         instrument=body.instrument,
         mode=body.mode,
     )
+
+
+@app.get("/api/live/ticker")
+def live_ticker(instrument: str = Query(default=DEFAULT_INSTRUMENT)):
+    """Fresh last price for the live chart (Binance)."""
+    instrument = _require_instrument(instrument)
+    if not has_live_feed(instrument):
+        raise HTTPException(status_code=400, detail=f"No live Binance feed for {instrument}")
+    try:
+        return fetch_live_ticker(instrument)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Live ticker failed: %s", exc)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/live/klines")
+def live_klines(
+    instrument: str = Query(default=DEFAULT_INSTRUMENT),
+    interval: str = Query(default="15m", pattern="^(1m|5m|15m|30m|1h|4h|1d)$"),
+    limit: int = Query(default=80, ge=20, le=200),
+):
+    """OHLCV seed candles for the live chart (Binance)."""
+    instrument = _require_instrument(instrument)
+    if not has_live_feed(instrument):
+        raise HTTPException(status_code=400, detail=f"No live Binance feed for {instrument}")
+    try:
+        candles = fetch_live_klines(instrument, interval=interval, limit=limit)
+        return {"instrument": instrument, "interval": interval, "candles": candles}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Live klines failed: %s", exc)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/")

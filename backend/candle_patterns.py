@@ -109,23 +109,217 @@ def _inside_bar(prev: dict, cur: dict) -> bool:
     return cur["high"] <= prev["high"] and cur["low"] >= prev["low"]
 
 
+def _mid(c: dict) -> float:
+    return (c["open"] + c["close"]) / 2
+
+
+def _small_wicks(c: dict, max_wick_pct: float = 0.25) -> bool:
+    return c["upper_pct"] <= max_wick_pct and c["lower_pct"] <= max_wick_pct
+
+
+def _prior_trend(df: pd.DataFrame, lookback: int = 8) -> int:
+    """Rough prior-trend: +1 up, -1 down, 0 mixed. Uses bars *before* the pattern."""
+    if len(df) < lookback + 1:
+        return 0
+    closes = df["close"].iloc[-(lookback + 1) : -1].values
+    if float(closes[-1]) > float(closes[0]) * 1.002:
+        return 1
+    if float(closes[-1]) < float(closes[0]) * 0.998:
+        return -1
+    return 0
+
+
 def _morning_star(c1: dict, c2: dict, c3: dict) -> bool:
+    """Large red → small body (gap-down preferred) → strong green closing >50% of c1."""
     return (
         c1["bearish"]
         and c1["body_pct"] >= 0.45
         and c2["body_pct"] <= 0.35
         and c3["bullish"]
-        and c3["close"] > (c1["open"] + c1["close"]) / 2
+        and c3["body_pct"] >= 0.4
+        and c3["close"] > _mid(c1)
     )
 
 
 def _evening_star(c1: dict, c2: dict, c3: dict) -> bool:
+    """Large green → small body (gap-up preferred) → strong red closing <50% of c1."""
     return (
         c1["bullish"]
         and c1["body_pct"] >= 0.45
         and c2["body_pct"] <= 0.35
         and c3["bearish"]
-        and c3["close"] < (c1["open"] + c1["close"]) / 2
+        and c3["body_pct"] >= 0.4
+        and c3["close"] < _mid(c1)
+    )
+
+
+def _piercing(prev: dict, cur: dict) -> bool:
+    """Long red → green opens lower and closes above 50% of the red body."""
+    return (
+        prev["bearish"]
+        and prev["body_pct"] >= 0.45
+        and cur["bullish"]
+        and cur["open"] < prev["close"]
+        and cur["close"] > _mid(prev)
+        and cur["close"] < prev["open"]
+    )
+
+
+def _dark_cloud_cover(prev: dict, cur: dict) -> bool:
+    """Long green → red opens higher and closes below 50% of the green body."""
+    return (
+        prev["bullish"]
+        and prev["body_pct"] >= 0.45
+        and cur["bearish"]
+        and cur["open"] > prev["close"]
+        and cur["close"] < _mid(prev)
+        and cur["close"] > prev["open"]
+    )
+
+
+def _three_white_soldiers(c1: dict, c2: dict, c3: dict) -> bool:
+    """Three consecutive long green candles, each closing higher, small wicks."""
+    return (
+        c1["bullish"]
+        and c2["bullish"]
+        and c3["bullish"]
+        and c1["body_pct"] >= 0.5
+        and c2["body_pct"] >= 0.5
+        and c3["body_pct"] >= 0.5
+        and _small_wicks(c1)
+        and _small_wicks(c2)
+        and _small_wicks(c3)
+        and c2["close"] > c1["close"]
+        and c3["close"] > c2["close"]
+        and c2["open"] >= min(c1["open"], c1["close"])
+        and c2["open"] <= max(c1["open"], c1["close"])
+        and c3["open"] >= min(c2["open"], c2["close"])
+        and c3["open"] <= max(c2["open"], c2["close"])
+    )
+
+
+def _three_black_crows(c1: dict, c2: dict, c3: dict) -> bool:
+    """Three consecutive long red candles, each closing lower, small wicks."""
+    return (
+        c1["bearish"]
+        and c2["bearish"]
+        and c3["bearish"]
+        and c1["body_pct"] >= 0.5
+        and c2["body_pct"] >= 0.5
+        and c3["body_pct"] >= 0.5
+        and _small_wicks(c1)
+        and _small_wicks(c2)
+        and _small_wicks(c3)
+        and c2["close"] < c1["close"]
+        and c3["close"] < c2["close"]
+        and c2["open"] <= max(c1["open"], c1["close"])
+        and c2["open"] >= min(c1["open"], c1["close"])
+        and c3["open"] <= max(c2["open"], c2["close"])
+        and c3["open"] >= min(c2["open"], c2["close"])
+    )
+
+
+def _three_inside_up(c1: dict, c2: dict, c3: dict) -> bool:
+    """Confirmed bullish harami: large red → small green inside → green closes above c1 high."""
+    return (
+        c1["bearish"]
+        and c1["body_pct"] >= 0.45
+        and c2["bullish"]
+        and c2["high"] <= c1["high"]
+        and c2["low"] >= c1["low"]
+        and c2["body"] < c1["body"]
+        and c3["bullish"]
+        and c3["close"] > c1["high"]
+    )
+
+
+def _three_inside_down(c1: dict, c2: dict, c3: dict) -> bool:
+    """Confirmed bearish harami: large green → small red inside → red closes below c1 low."""
+    return (
+        c1["bullish"]
+        and c1["body_pct"] >= 0.45
+        and c2["bearish"]
+        and c2["high"] <= c1["high"]
+        and c2["low"] >= c1["low"]
+        and c2["body"] < c1["body"]
+        and c3["bearish"]
+        and c3["close"] < c1["low"]
+    )
+
+
+def _rising_three_methods(candles: list[dict]) -> bool:
+    """Long green → 3 small reds inside its range → strong green closes above first high."""
+    if len(candles) < 5:
+        return False
+    c1, m1, m2, m3, c5 = candles[-5:]
+    middles = [m1, m2, m3]
+    return (
+        c1["bullish"]
+        and c1["body_pct"] >= 0.5
+        and all(m["bearish"] for m in middles)
+        and all(m["body"] < c1["body"] * 0.6 for m in middles)
+        and all(m["high"] <= c1["high"] and m["low"] >= c1["low"] for m in middles)
+        and c5["bullish"]
+        and c5["body_pct"] >= 0.45
+        and c5["close"] > c1["high"]
+    )
+
+
+def _falling_three_methods(candles: list[dict]) -> bool:
+    """Long red → 3 small greens inside its range → strong red closes below first low."""
+    if len(candles) < 5:
+        return False
+    c1, m1, m2, m3, c5 = candles[-5:]
+    middles = [m1, m2, m3]
+    return (
+        c1["bearish"]
+        and c1["body_pct"] >= 0.5
+        and all(m["bullish"] for m in middles)
+        and all(m["body"] < c1["body"] * 0.6 for m in middles)
+        and all(m["high"] <= c1["high"] and m["low"] >= c1["low"] for m in middles)
+        and c5["bearish"]
+        and c5["body_pct"] >= 0.45
+        and c5["close"] < c1["low"]
+    )
+
+
+def _bullish_three_line_strike(candles: list[dict]) -> bool:
+    """3 rising greens → large red engulfs all three (fake reversal → continuation up)."""
+    if len(candles) < 4:
+        return False
+    c1, c2, c3, strike = candles[-4:]
+    return (
+        c1["bullish"]
+        and c2["bullish"]
+        and c3["bullish"]
+        and c2["close"] > c1["close"]
+        and c3["close"] > c2["close"]
+        and c2["low"] >= c1["low"]
+        and c3["low"] >= c2["low"]
+        and strike["bearish"]
+        and strike["body"] > max(c1["body"], c2["body"], c3["body"])
+        and strike["open"] >= c3["close"]
+        and strike["close"] <= c1["open"]
+    )
+
+
+def _bearish_three_line_strike(candles: list[dict]) -> bool:
+    """3 falling reds → large green engulfs all three (fake reversal → continuation down)."""
+    if len(candles) < 4:
+        return False
+    c1, c2, c3, strike = candles[-4:]
+    return (
+        c1["bearish"]
+        and c2["bearish"]
+        and c3["bearish"]
+        and c2["close"] < c1["close"]
+        and c3["close"] < c2["close"]
+        and c2["high"] <= c1["high"]
+        and c3["high"] <= c2["high"]
+        and strike["bullish"]
+        and strike["body"] > max(c1["body"], c2["body"], c3["body"])
+        and strike["open"] <= c3["close"]
+        and strike["close"] >= c1["open"]
     )
 
 
@@ -258,22 +452,55 @@ def _dominant_pattern(df: pd.DataFrame) -> tuple[str, int]:
     """Pick the strongest playbook pattern on the latest candle(s).
 
     Returns (name, direction) where direction is 1 bull, -1 bear, 0 neutral.
-    Priority: 3-candle > 2-candle > single-candle.
+    Priority: 5-candle → 4-candle → 3-candle → 2-candle → single-candle.
     """
-    cur = _row(df.iloc[-1])
-    prev = _row(df.iloc[-2])
+    if len(df) < 2:
+        return "no clean pattern", 0
 
-    if len(df) >= 3:
-        c1, c2, c3 = _row(df.iloc[-3]), _row(df.iloc[-2]), _row(df.iloc[-1])
-        if _morning_star(c1, c2, c3):
+    rows = [_row(df.iloc[i]) for i in range(len(df))]
+    cur = rows[-1]
+    prev = rows[-2]
+    trend = _prior_trend(df)
+
+    # --- 5-candle continuation ---
+    if len(rows) >= 5:
+        if _rising_three_methods(rows) and trend >= 0:
+            return "rising three methods", 1
+        if _falling_three_methods(rows) and trend <= 0:
+            return "falling three methods", -1
+
+    # --- 4-candle continuation (three-line strike) ---
+    if len(rows) >= 4:
+        if _bullish_three_line_strike(rows) and trend >= 0:
+            return "bullish three-line strike", 1
+        if _bearish_three_line_strike(rows) and trend <= 0:
+            return "bearish three-line strike", -1
+
+    # --- 3-candle reversals ---
+    if len(rows) >= 3:
+        c1, c2, c3 = rows[-3], rows[-2], rows[-1]
+        if _morning_star(c1, c2, c3) and trend <= 0:
             return "morning star", 1
-        if _evening_star(c1, c2, c3):
+        if _evening_star(c1, c2, c3) and trend >= 0:
             return "evening star", -1
+        if _three_white_soldiers(c1, c2, c3) and trend <= 0:
+            return "three white soldiers", 1
+        if _three_black_crows(c1, c2, c3) and trend >= 0:
+            return "three black crows", -1
+        if _three_inside_up(c1, c2, c3) and trend <= 0:
+            return "three inside up", 1
+        if _three_inside_down(c1, c2, c3) and trend >= 0:
+            return "three inside down", -1
 
-    if _bullish_engulfing(prev, cur):
+    # --- 2-candle reversals ---
+    if _bullish_engulfing(prev, cur) and trend <= 0:
         return "bullish engulfing", 1
-    if _bearish_engulfing(prev, cur):
+    if _bearish_engulfing(prev, cur) and trend >= 0:
         return "bearish engulfing", -1
+    if _piercing(prev, cur) and trend <= 0:
+        return "piercing pattern", 1
+    if _dark_cloud_cover(prev, cur) and trend >= 0:
+        return "dark cloud cover", -1
     if _inside_bar(prev, cur):
         if cur["close"] > prev["high"]:
             return "inside-bar breakout", 1
@@ -281,17 +508,73 @@ def _dominant_pattern(df: pd.DataFrame) -> tuple[str, int]:
             return "inside-bar breakdown", -1
         return "inside bar (coiling)", 0
 
+    # --- Single-candle ---
     if _is_doji(cur):
         return "doji", 0
-    if _is_hammer(cur):
+    if _is_hammer(cur) and trend <= 0:
         return "hammer / pin bar", 1
-    if _is_shooting_star(cur):
+    if _is_shooting_star(cur) and trend >= 0:
         return "shooting star", -1
     if cur["bullish"] and cur["body_pct"] >= 0.7:
         return "bullish marubozu", 1
     if cur["bearish"] and cur["body_pct"] >= 0.7:
         return "bearish marubozu", -1
     return "no clean pattern", 0
+
+
+def _detect_all_patterns(df: pd.DataFrame) -> list[str]:
+    """Collect every matching pattern name for the UI snapshot."""
+    if len(df) < 2:
+        return []
+    rows = [_row(df.iloc[i]) for i in range(len(df))]
+    cur, prev = rows[-1], rows[-2]
+    found: list[str] = []
+
+    if _is_doji(cur):
+        found.append("Doji")
+    if _is_hammer(cur):
+        found.append("Hammer")
+    if _is_shooting_star(cur):
+        found.append("Shooting Star")
+    if _bullish_engulfing(prev, cur):
+        found.append("Bullish Engulfing")
+    if _bearish_engulfing(prev, cur):
+        found.append("Bearish Engulfing")
+    if _piercing(prev, cur):
+        found.append("Piercing Pattern")
+    if _dark_cloud_cover(prev, cur):
+        found.append("Dark Cloud Cover")
+    if _inside_bar(prev, cur):
+        found.append("Inside Bar")
+
+    if len(rows) >= 3:
+        c1, c2, c3 = rows[-3], rows[-2], rows[-1]
+        if _morning_star(c1, c2, c3):
+            found.append("Morning Star")
+        if _evening_star(c1, c2, c3):
+            found.append("Evening Star")
+        if _three_white_soldiers(c1, c2, c3):
+            found.append("Three White Soldiers")
+        if _three_black_crows(c1, c2, c3):
+            found.append("Three Black Crows")
+        if _three_inside_up(c1, c2, c3):
+            found.append("Three Inside Up")
+        if _three_inside_down(c1, c2, c3):
+            found.append("Three Inside Down")
+
+    if len(rows) >= 4:
+        if _bullish_three_line_strike(rows):
+            found.append("Bullish Three-Line Strike")
+        if _bearish_three_line_strike(rows):
+            found.append("Bearish Three-Line Strike")
+
+    if len(rows) >= 5:
+        if _rising_three_methods(rows):
+            found.append("Rising Three Methods")
+        if _falling_three_methods(rows):
+            found.append("Falling Three Methods")
+
+    return found
 
 
 def candle_votes(df: pd.DataFrame) -> list[CandleVote]:
@@ -322,10 +605,13 @@ def candle_votes(df: pd.DataFrame) -> list[CandleVote]:
         votes.append(CandleVote("Candle Trigger", "BUY", 1.4, f"{name} at support/Fib zone"))
     elif pdir < 0 and ctx["at_bear_level"]:
         votes.append(CandleVote("Candle Trigger", "SELL", 1.4, f"{name} at resistance/Fib zone"))
-    elif name == "doji":
-        votes.append(CandleVote("Candle Trigger", "NEUTRAL", 0.4, "Doji at level — wait for confirmation"))
-    elif pdir != 0:
-        votes.append(CandleVote("Candle Trigger", "NEUTRAL", 0.3, f"{name} but not at a key level"))
+    elif name == "doji" or "coiling" in name:
+        votes.append(CandleVote("Candle Trigger", "NEUTRAL", 0.4, f"{name} — wait for confirmation"))
+    elif pdir > 0:
+        # Soft weight off-level so clear patterns still lean the signal.
+        votes.append(CandleVote("Candle Trigger", "BUY", 0.85, f"{name} (soft — not at key level yet)"))
+    elif pdir < 0:
+        votes.append(CandleVote("Candle Trigger", "SELL", 0.85, f"{name} (soft — not at key level yet)"))
     else:
         votes.append(CandleVote("Candle Trigger", "NEUTRAL", 0.2, "No trigger candle at a key level"))
 
@@ -378,28 +664,9 @@ def pattern_snapshot(df: pd.DataFrame) -> dict[str, str | float]:
         return {}
     snap = candle_snapshot(df)
     cur = _row(df.iloc[-1])
-    prev = _row(df.iloc[-2])
-    patterns: list[str] = []
-    if _is_doji(cur):
-        patterns.append("Doji")
-    if _is_hammer(cur):
-        patterns.append("Hammer")
-    if _is_shooting_star(cur):
-        patterns.append("Shooting Star")
-    if _bullish_engulfing(prev, cur):
-        patterns.append("Bullish Engulfing")
-    if _bearish_engulfing(prev, cur):
-        patterns.append("Bearish Engulfing")
-    if _inside_bar(prev, cur):
-        patterns.append("Inside Bar")
-    if len(df) >= 3:
-        c1 = _row(df.iloc[-3])
-        c2 = _row(df.iloc[-2])
-        c3 = _row(df.iloc[-1])
-        if _morning_star(c1, c2, c3):
-            patterns.append("Morning Star")
-        if _evening_star(c1, c2, c3):
-            patterns.append("Evening Star")
+    patterns = _detect_all_patterns(df)
+    dominant_name, dominant_dir = _dominant_pattern(df)
+    signal_map = {1: "BUY", -1: "SELL", 0: "WAIT"}
 
     ctx = _playbook_context(df, snap)
     price = snap["price"]
@@ -419,6 +686,8 @@ def pattern_snapshot(df: pd.DataFrame) -> dict[str, str | float]:
 
     return {
         "patterns": ", ".join(patterns) if patterns else "None detected",
+        "dominant_pattern": dominant_name,
+        "pattern_signal": signal_map.get(dominant_dir, "WAIT"),
         "last_candle": "Bullish" if cur["bullish"] else "Bearish",
         "body_pct": round(cur["body_pct"] * 100, 1),
         "bias": bias,

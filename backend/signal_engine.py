@@ -12,6 +12,7 @@ from backend.candle_patterns import CandleVote, candle_snapshot, candle_votes, p
 from backend.config import get_instrument, settings
 from backend.data_feed import candles_to_list, fetch_ohlcv
 from backend.indicators import PATTERN_LIBRARY, enrich, latest_snapshot, safe_nan
+from backend.live_feed import fetch_live_ticker, has_live_feed
 
 Side = Literal["BUY", "SELL", "WAIT"]
 AnalysisMode = Literal["indicators", "candles"]
@@ -233,10 +234,15 @@ def _votes(snap: dict) -> list[Vote]:
     return votes
 
 
-def _score(votes: list[Vote] | list[CandleVote], *, wait_msg: str) -> tuple[Side, float, float, list[str]]:
-    # Playbook §1 hard rule: if the top-down 50/200 bias is range/neutral,
-    # we are in no-trade mode regardless of what the lower layers say.
-    # (Candle-mode votes have no "Market Bias" entry, so this is a no-op there.)
+def _score(
+    votes: list[Vote] | list[CandleVote],
+    *,
+    wait_msg: str,
+    enforce_range_gate: bool = True,
+) -> tuple[Side, float, float, list[str]]:
+    # Playbook §1 hard rule (indicator mode): if the top-down 50/200 bias is
+    # range/neutral, no-trade. Candle mode keeps Market Bias as a soft vote
+    # only — pattern + structure decide the side.
     bias = next((v for v in votes if v.name == "Market Bias"), None)
     range_mode = bias is not None and bias.side == "NEUTRAL"
 
@@ -260,16 +266,41 @@ def _score(votes: list[Vote] | list[CandleVote], *, wait_msg: str) -> tuple[Side
 
     # Confidence from dominance + edge (realistic band ~50–85)
     confidence = 50.0 + dominance * 25.0 + edge * 20.0
-    confidence = float(np.clip(confidence, 50.0, 88.0))
+    # Soft penalty in range for candle mode (still allow a directional lean)
+    if range_mode and not enforce_range_gate:
+        confidence = float(np.clip(confidence - 6.0, 50.0, 88.0))
+    else:
+        confidence = float(np.clip(confidence, 50.0, 88.0))
 
     # Win probability slightly below raw confidence (honest framing)
     win_probability = float(np.clip(confidence - 3.0 + edge * 5.0, 48.0, 82.0))
 
-    if range_mode:
+    if enforce_range_gate and range_mode:
         side = "WAIT"
         reasons = ["No trade: price is chopping between the 50/200 EMA (range mode)"]
         reasons += [v.reason for v in votes if v.side == "NEUTRAL"][:3]
         return side, confidence, win_probability, reasons
+
+    # Candle-mode: doji / inside-bar coil = always wait for confirmation
+    trigger = next((v for v in votes if v.name == "Candle Trigger"), None)
+    if trigger is not None:
+        reason_l = trigger.reason.lower()
+        if "doji" in reason_l or "coiling" in reason_l:
+            side = "WAIT"
+            reasons = [
+                "Waiting for candle confirmation (doji / inside bar coil)",
+                trigger.reason,
+            ]
+            reasons += [v.reason for v in votes if v.side != "NEUTRAL"][:2]
+            return side, confidence, win_probability, reasons
+        if "no trigger candle" in reason_l and edge < 0.18:
+            side = "WAIT"
+            reasons = [
+                "Waiting for a clean candle trigger at structure",
+                trigger.reason,
+            ]
+            reasons += [v.reason for v in votes if v.side == "NEUTRAL"][:2]
+            return side, confidence, win_probability, reasons
 
     if side == "WAIT" or confidence < settings.min_confidence_to_trade:
         side = "WAIT"
@@ -281,6 +312,8 @@ def _score(votes: list[Vote] | list[CandleVote], *, wait_msg: str) -> tuple[Side
     opposing = [v.reason for v in votes if v.side not in (side, "NEUTRAL")]
     if opposing:
         reasons.append(f"Caution: {opposing[0]}")
+    if range_mode:
+        reasons.append("Caution: 50/200 EMA still in range — size down / confirm")
 
     return side, confidence, win_probability, reasons
 
@@ -385,6 +418,16 @@ def analyze_xauusd(
     return _analyze_indicators(interval, account_balance, risk_percent, instrument)
 
 
+def _live_entry(instrument: str | None, fallback: float) -> float:
+    """Pin entry to the live Binance last price when available."""
+    if not has_live_feed(instrument or ""):
+        return fallback
+    try:
+        return round(float(fetch_live_ticker(instrument or "")["price"]), 2)
+    except Exception:  # noqa: BLE001
+        return fallback
+
+
 def _analyze_indicators(
     interval: str,
     account_balance: float | None,
@@ -400,7 +443,7 @@ def _analyze_indicators(
     display_symbol = str(inst["display_symbol"])
     contract_size = float(inst["contract_size"])
 
-    raw = fetch_ohlcv(interval=interval, symbol=yahoo_symbol)
+    raw = fetch_ohlcv(interval=interval, symbol=yahoo_symbol, instrument=instrument)
     df = enrich(raw)
     df = df.dropna()
     if len(df) < 60:
@@ -415,7 +458,7 @@ def _analyze_indicators(
         votes,
         wait_msg="Indicators are mixed — no high-conviction setup right now",
     )
-    entry = round(snap["price"], 2)
+    entry = _live_entry(instrument, round(snap["price"], 2))
     atr = snap["atr"]
 
     stop_loss, take_profit, rr = _tp_sl(side, entry, atr, snap)
@@ -483,7 +526,7 @@ def _analyze_candles(
     display_symbol = str(inst["display_symbol"])
     contract_size = float(inst["contract_size"])
 
-    raw = fetch_ohlcv(interval=interval, symbol=yahoo_symbol)
+    raw = fetch_ohlcv(interval=interval, symbol=yahoo_symbol, instrument=instrument)
     df = raw.dropna()
     if len(df) < 30:
         raise RuntimeError("Not enough candle data to analyze. Try a higher timeframe.")
@@ -493,8 +536,9 @@ def _analyze_candles(
     side, confidence, win_prob, reasons = _score(
         votes,
         wait_msg="Candle patterns are mixed — no high-conviction setup right now",
+        enforce_range_gate=False,
     )
-    entry = round(pa_snap["price"], 2)
+    entry = _live_entry(instrument, round(pa_snap["price"], 2))
     avg_rng = pa_snap["avg_range"]
 
     tp_snap = {
@@ -549,7 +593,7 @@ def quick_backtest_hint(
     """Lightweight recent-window hit-rate hint (not a full backtester)."""
     if df is None:
         symbol = str(get_instrument(instrument)["symbol"])
-        df = enrich(fetch_ohlcv(interval=interval, symbol=symbol)).dropna()
+        df = enrich(fetch_ohlcv(interval=interval, symbol=symbol, instrument=instrument)).dropna()
 
     hits = 0
     total = 0

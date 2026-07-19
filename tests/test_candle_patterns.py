@@ -7,9 +7,13 @@ import pandas as pd
 from backend.candle_patterns import (
     _bearish_engulfing,
     _bullish_engulfing,
+    _dark_cloud_cover,
     _is_hammer,
     _is_shooting_star,
+    _piercing,
     _row,
+    _three_black_crows,
+    _three_white_soldiers,
     candle_votes,
 )
 from backend.signal_engine import analyze_xauusd
@@ -41,6 +45,32 @@ def test_shooting_star_detected():
     assert _is_shooting_star(c)
 
 
+def test_piercing_pattern_detected():
+    prev = _row(pd.Series(_candle(110, 111, 100, 101)))  # long red
+    cur = _row(pd.Series(_candle(99, 108, 98, 107)))  # green closes >50% into red
+    assert _piercing(prev, cur)
+
+
+def test_dark_cloud_cover_detected():
+    prev = _row(pd.Series(_candle(100, 111, 99, 110)))  # long green
+    cur = _row(pd.Series(_candle(112, 113, 102, 103)))  # red closes <50% into green
+    assert _dark_cloud_cover(prev, cur)
+
+
+def test_three_white_soldiers_detected():
+    c1 = _row(pd.Series(_candle(100, 105.2, 99.8, 105)))
+    c2 = _row(pd.Series(_candle(103, 110.2, 102.8, 110)))
+    c3 = _row(pd.Series(_candle(108, 116.2, 107.8, 116)))
+    assert _three_white_soldiers(c1, c2, c3)
+
+
+def test_three_black_crows_detected():
+    c1 = _row(pd.Series(_candle(116, 116.2, 110.8, 111)))
+    c2 = _row(pd.Series(_candle(113, 113.2, 105.8, 106)))
+    c3 = _row(pd.Series(_candle(108, 108.2, 99.8, 100)))
+    assert _three_black_crows(c1, c2, c3)
+
+
 def test_candle_votes_on_downtrend_series():
     rows = []
     price = 4000.0
@@ -64,3 +94,5 @@ def test_analyze_candles_mode_returns_signal():
     assert data["side"] in {"BUY", "SELL", "WAIT"}
     assert data["entry"] > 0
     assert "patterns" in data["snapshot"]
+    assert "dominant_pattern" in data["snapshot"]
+    assert "pattern_signal" in data["snapshot"]

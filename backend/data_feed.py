@@ -1,4 +1,4 @@
-"""Fetch OHLCV market data for XAU/USD (gold)."""
+"""Fetch OHLCV market data — Binance for BTC/gold, Yahoo otherwise."""
 
 from __future__ import annotations
 
@@ -8,7 +8,8 @@ from typing import Any
 import httpx
 import pandas as pd
 
-from backend.config import settings
+from backend.config import binance_symbol, get_instrument, settings
+from backend.live_feed import BINANCE_BASES, INTERVAL_TO_BINANCE
 
 logger = logging.getLogger(__name__)
 
@@ -71,15 +72,72 @@ def _chart_to_df(payload: dict[str, Any]) -> pd.DataFrame:
     return df
 
 
+def _fetch_binance_ohlcv(binance_symbol: str, interval: str, limit: int = 200) -> pd.DataFrame:
+    """Pull OHLCV from Binance so analysis uses the same book as the live chart."""
+    bin_iv = INTERVAL_TO_BINANCE.get(interval, interval)
+    limit = max(60, min(limit, 500))
+    errors: list[str] = []
+
+    for base in BINANCE_BASES:
+        try:
+            with httpx.Client(timeout=15.0, headers=HEADERS, follow_redirects=True) as client:
+                response = client.get(
+                    f"{base}/api/v3/klines",
+                    params={"symbol": binance_symbol, "interval": bin_iv, "limit": limit},
+                )
+                response.raise_for_status()
+                rows = response.json()
+            if not rows:
+                continue
+            idx = pd.to_datetime([int(r[0]) for r in rows], unit="ms", utc=True).tz_convert(None)
+            df = pd.DataFrame(
+                {
+                    "open": [float(r[1]) for r in rows],
+                    "high": [float(r[2]) for r in rows],
+                    "low": [float(r[3]) for r in rows],
+                    "close": [float(r[4]) for r in rows],
+                    "volume": [float(r[5]) for r in rows],
+                },
+                index=idx,
+            )
+            logger.info("Fetched %s Binance bars for %s (%s)", len(df), binance_symbol, bin_iv)
+            return df
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{base}: {exc}")
+
+    raise RuntimeError(f"Binance OHLCV failed for {binance_symbol}: {'; '.join(errors)}")
+
+
 def fetch_ohlcv(
     interval: str | None = None,
     period: str | None = None,
     symbol: str | None = None,
+    instrument: str | None = None,
 ) -> pd.DataFrame:
-    """Download OHLCV candles for gold / XAUUSD via Yahoo Finance chart API."""
+    """Download OHLCV. Prefer Binance when the instrument has a Binance pair."""
     requested_interval = interval or settings.default_interval
     symbol = symbol or settings.symbol
-    # Accept legacy "period" name from callers; map onto Yahoo "range"
+
+    bn = binance_symbol(instrument) if instrument else None
+    if not bn:
+        # Fallback: symbol itself may already be a Binance pair (e.g. ETHUSDT)
+        inst = get_instrument(instrument) if instrument else None
+        if inst and inst.get("binance"):
+            bn = str(inst["binance"])
+        elif str(symbol).endswith("USDT"):
+            bn = str(symbol).upper()
+        elif instrument:
+            bn = binance_symbol(instrument)
+
+    if bn:
+        try:
+            df = _fetch_binance_ohlcv(bn, requested_interval, limit=settings.lookback_bars)
+            if len(df) > settings.lookback_bars:
+                df = df.iloc[-settings.lookback_bars :]
+            return df
+        except Exception as binance_exc:  # noqa: BLE001
+            logger.warning("Binance fetch failed for %s, falling back to Yahoo: %s", bn, binance_exc)
+
     range_ = period or INTERVAL_RANGE_MAP.get(requested_interval, settings.default_period)
     yahoo_interval = YAHOO_INTERVAL_MAP.get(requested_interval, requested_interval)
 
@@ -99,7 +157,6 @@ def fetch_ohlcv(
             yahoo_interval,
             primary_exc,
         )
-        # Fallback: daily candles
         try:
             with httpx.Client(timeout=20.0, headers=HEADERS, follow_redirects=True) as client:
                 response = client.get(

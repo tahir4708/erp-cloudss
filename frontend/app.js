@@ -3,6 +3,11 @@ const $ = (id) => document.getElementById(id);
 const els = {
   btn: $("analyzeBtn"),
   instrument: $("instrument"),
+  instrumentSearch: $("instrumentSearch"),
+  instrumentList: $("instrumentList"),
+  quotePair: $("quotePair"),
+  quotePrice: $("quotePrice"),
+  quoteChange: $("quoteChange"),
   mode: $("mode"),
   interval: $("interval"),
   balance: $("balance"),
@@ -31,14 +36,13 @@ const els = {
   toast: $("toast"),
   core: $("signalCore"),
   chart: $("priceChart"),
-  liveToggle: $("liveToggle"),
-  refreshRate: $("refreshRate"),
 };
 
 let lastSignal = null;
-let liveTimer = null;
-let countdownTimer = null;
 let fetching = false;
+let instrumentCatalog = [];
+let instrumentFilter = "";
+let highlightIndex = -1;
 
 let chart = null;
 let candleSeries = null;
@@ -46,21 +50,30 @@ let volumeSeries = null;
 let priceLines = [];
 let fitNext = true;
 
-// Real-time tick feed (free, no API key) via Binance WebSocket.
-//  - BTCUSD -> btcusdt (spot crypto)
-//  - XAUUSD -> paxgusdt (PAX Gold ≈ spot gold; basis-aligned to the chart)
-// USOIL has no free per-second websocket, so it stays on the polling refresh.
-const BINANCE_SYMBOLS = { BTCUSD: "btcusdt", XAUUSD: "paxgusdt" };
-const BINANCE_INTERVALS = {
-  "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
-  "1h": "1h", "4h": "4h", "1d": "1d",
+// Live chart when the instrument has a Binance pair (crypto + gold/PAXG).
+const INTERVAL_SECONDS = {
+  "1m": 60, "5m": 300, "15m": 900, "30m": 1800,
+  "1h": 3600, "4h": 14400, "1d": 86400,
 };
-let ws = null;
-let wsKey = null;
+let tickerTimer = null;
 let lastBarTime = 0;
 let lastChartClose = 0;
-let lastBar = null; // OHLC of the forming candle, updated live tick-by-tick
-let feedBasis = null; // offset added to raw feed prices to align with the chart
+let lastBar = null;
+let lastUiTickMs = 0;
+let liveSource = "";
+
+function currentInstrument() {
+  return (els.instrument?.value || "BTCUSD").toUpperCase();
+}
+
+function instrumentMeta(key) {
+  return instrumentCatalog.find((i) => i.key === key) || null;
+}
+
+function hasLiveFeed(key) {
+  const meta = instrumentMeta(key);
+  return Boolean(meta?.live ?? meta?.binance);
+}
 
 function showToast(message) {
   els.toast.hidden = false;
@@ -71,9 +84,12 @@ function showToast(message) {
   }, 4200);
 }
 
-function toEpoch(iso) {
-  // Backend sends tz-naive UTC timestamps; treat them as UTC.
-  const ms = new Date(`${iso}Z`).getTime();
+function toEpoch(time) {
+  // Live klines send unix seconds; signal/Yahoo candles send ISO strings.
+  if (typeof time === "number" && Number.isFinite(time)) {
+    return time > 1e12 ? Math.floor(time / 1000) : Math.floor(time);
+  }
+  const ms = new Date(`${time}Z`).getTime();
   return Math.floor(ms / 1000);
 }
 
@@ -81,7 +97,47 @@ function pricePrecision(candles) {
   const sample = candles?.[candles.length - 1]?.close ?? 100;
   if (sample >= 1000) return { precision: 2, minMove: 0.01 };
   if (sample >= 1) return { precision: 2, minMove: 0.01 };
-  return { precision: 4, minMove: 0.0001 };
+  if (sample >= 0.01) return { precision: 4, minMove: 0.0001 };
+  if (sample >= 0.0001) return { precision: 6, minMove: 0.000001 };
+  return { precision: 8, minMove: 0.00000001 };
+}
+
+/** Normalize candles so Lightweight Charts never gets bad OHLC / duplicate times. */
+function sanitizeBars(candles) {
+  const byTime = new Map();
+  for (const c of candles) {
+    const time = toEpoch(c.time);
+    if (!Number.isFinite(time) || time <= 0) continue;
+    const open = +c.open;
+    const high = +c.high;
+    const low = +c.low;
+    const close = +c.close;
+    const volume = Math.max(0, +c.volume || 0);
+    if (![open, high, low, close].every((n) => Number.isFinite(n) && n > 0)) continue;
+    const hi = Math.max(open, close, high);
+    const lo = Math.min(open, close, low);
+    // Skip absurd spikes that would explode the Y-axis (bad ticks / feed glitches).
+    const mid = (open + close) / 2;
+    if (mid > 0 && (hi > mid * 3 || lo < mid * 0.33)) continue;
+    byTime.set(time, { time, open, high: hi, low: lo, close, volume });
+  }
+  return [...byTime.values()].sort((a, b) => a.time - b.time);
+}
+
+function destroyChart() {
+  stopRealtime();
+  if (chart) {
+    try {
+      chart.remove();
+    } catch (_) {}
+  }
+  chart = null;
+  candleSeries = null;
+  volumeSeries = null;
+  priceLines = [];
+  lastBar = null;
+  lastBarTime = 0;
+  lastChartClose = 0;
 }
 
 function ensureChart() {
@@ -99,11 +155,16 @@ function ensureChart() {
       horzLines: { color: "rgba(60,45,15,0.07)" },
     },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-    rightPriceScale: { borderColor: "rgba(60,45,15,0.15)" },
+    rightPriceScale: {
+      borderColor: "rgba(60,45,15,0.15)",
+      autoScale: true,
+      scaleMargins: { top: 0.08, bottom: 0.22 },
+    },
     timeScale: {
       borderColor: "rgba(60,45,15,0.15)",
       timeVisible: true,
       secondsVisible: false,
+      rightOffset: 4,
     },
   });
 
@@ -114,14 +175,20 @@ function ensureChart() {
     borderDownColor: "#e25b4c",
     wickUpColor: "#3dba7a",
     wickDownColor: "#e25b4c",
+    lastValueVisible: true,
+    priceLineVisible: true,
   });
 
   volumeSeries = chart.addHistogramSeries({
     priceFormat: { type: "volume" },
     priceScaleId: "vol",
     color: "rgba(212,168,75,0.35)",
+    lastValueVisible: false,
+    priceLineVisible: false,
   });
   chart.priceScale("vol").applyOptions({
+    visible: false,
+    autoScale: true,
     scaleMargins: { top: 0.82, bottom: 0 },
   });
 }
@@ -132,32 +199,50 @@ function drawChart(candles, signal) {
 
   ensureChart();
 
-  candleSeries.applyOptions({ priceFormat: { type: "price", ...pricePrecision(candles) } });
+  const bars = sanitizeBars(candles);
+  if (!bars.length) {
+    els.caption.textContent = "No valid candles to chart";
+    return;
+  }
 
-  const bars = candles.map((c) => ({
-    time: toEpoch(c.time),
-    open: c.open,
-    high: c.high,
-    low: c.low,
-    close: c.close,
-  }));
-  candleSeries.setData(bars);
-  lastBarTime = bars.length ? bars[bars.length - 1].time : 0;
-  lastChartClose = bars.length ? bars[bars.length - 1].close : 0;
-  lastBar = bars.length ? { ...bars[bars.length - 1] } : null;
-  // Re-anchor the live feed to this freshly polled close so the tick stream
-  // realigns each refresh instead of drifting away from the chart.
-  feedBasis = null;
+  const iv = INTERVAL_SECONDS[els.interval.value] || 900;
+  // Keep the last bar on the interval boundary (live ticks attach here).
+  const last = { ...bars[bars.length - 1] };
+  last.time = Math.floor(last.time / iv) * iv;
+  if (bars.length >= 2 && last.time < bars[bars.length - 2].time) {
+    last.time = bars[bars.length - 2].time + iv;
+  }
+  bars[bars.length - 1] = last;
 
+  candleSeries.applyOptions({
+    priceFormat: { type: "price", ...pricePrecision(bars) },
+  });
+  candleSeries.setData(
+    bars.map(({ time, open, high, low, close }) => ({ time, open, high, low, close }))
+  );
   volumeSeries.setData(
-    candles.map((c) => ({
-      time: toEpoch(c.time),
-      value: c.volume || 0,
-      color: c.close >= c.open ? "rgba(61,186,122,0.35)" : "rgba(226,91,76,0.35)",
+    bars.map(({ time, open, close, volume }) => ({
+      time,
+      value: volume,
+      color: close >= open ? "rgba(61,186,122,0.35)" : "rgba(226,91,76,0.35)",
     }))
   );
 
-  priceLines.forEach((line) => candleSeries.removePriceLine(line));
+  lastBar = { time: last.time, open: last.open, high: last.high, low: last.low, close: last.close };
+  lastBarTime = last.time;
+  lastChartClose = last.close;
+
+  // Force a clean autoscale around price (fixes wild -40k…140k axes).
+  candleSeries.priceScale().applyOptions({
+    autoScale: true,
+    scaleMargins: { top: 0.08, bottom: 0.22 },
+  });
+
+  priceLines.forEach((line) => {
+    try {
+      candleSeries.removePriceLine(line);
+    } catch (_) {}
+  });
   priceLines = [];
 
   if (signal && signal.side !== "WAIT") {
@@ -166,10 +251,14 @@ function drawChart(candles, signal) {
       { price: signal.entry, color: "#f0c56d", title: "ENTRY" },
       { price: signal.stop_loss, color: "#e25b4c", title: "SL" },
     ];
+    const mid = last.close;
     guides.forEach((g) => {
+      const p = +g.price;
+      // Ignore guide lines that are absurdly far from price (bad cross-feed levels).
+      if (!Number.isFinite(p) || p <= 0 || Math.abs(p - mid) / mid > 0.15) return;
       priceLines.push(
         candleSeries.createPriceLine({
-          price: g.price,
+          price: p,
           color: g.color,
           lineWidth: 1,
           lineStyle: LightweightCharts.LineStyle.Dashed,
@@ -180,100 +269,69 @@ function drawChart(candles, signal) {
     });
   }
 
-  if (fitNext) {
-    chart.timeScale().fitContent();
-    fitNext = false;
-  }
+  chart.timeScale().fitContent();
+  fitNext = false;
 }
 
 function fmtPrice(p) {
   if (p >= 1000) return p.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   if (p >= 1) return p.toFixed(2);
-  return p.toFixed(4);
+  if (p >= 0.01) return p.toFixed(4);
+  if (p >= 0.0001) return p.toFixed(6);
+  return p.toFixed(8);
 }
 
-function stopRealtime() {
-  if (ws) {
-    try {
-      ws.onclose = null;
-      ws.close();
-    } catch (_) {}
+function updateMarketQuote({ price, changePct, label } = {}) {
+  const meta = instrumentMeta(currentInstrument());
+  if (els.quotePair) {
+    els.quotePair.textContent = label || meta?.label || currentInstrument();
   }
-  ws = null;
-  wsKey = null;
+  if (price != null && Number.isFinite(+price) && els.quotePrice) {
+    els.quotePrice.textContent = fmtPrice(+price);
+  }
+  if (changePct != null && Number.isFinite(+changePct) && els.quoteChange) {
+    const pct = +changePct;
+    const sign = pct > 0 ? "+" : "";
+    els.quoteChange.textContent = `${sign}${pct.toFixed(2)}%`;
+    els.quoteChange.classList.remove("up", "down", "flat");
+    els.quoteChange.classList.add(pct > 0 ? "up" : pct < 0 ? "down" : "flat");
+  }
 }
 
-function connectRealtime() {
-  const instrument = els.instrument.value;
-  const interval = els.interval.value;
-  const symbol = BINANCE_SYMBOLS[instrument];
-  const binInterval = BINANCE_INTERVALS[interval];
+function applyTick(price, changePct) {
+  if (Number.isFinite(price) && price > 0) {
+    updateMarketQuote({ price, changePct });
+  }
+  if (!candleSeries || !lastBar || !Number.isFinite(price) || price <= 0) return;
 
-  // No free per-second feed for this instrument/timeframe → polling only.
-  if (!symbol || !binInterval) {
-    stopRealtime();
+  // Reject wild ticks that would blow up the Y-axis.
+  if (lastChartClose > 0 && Math.abs(price - lastChartClose) / lastChartClose > 0.05) {
     return;
   }
 
-  const desiredKey = `${symbol}@${binInterval}`;
-  if (desiredKey === wsKey && ws && ws.readyState <= 1) return; // already connected
+  const iv = INTERVAL_SECONDS[els.interval.value] || 900;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const barTime = Math.floor(nowSec / iv) * iv;
 
-  stopRealtime();
-  wsKey = desiredKey;
-  feedBasis = null; // recomputed on first tick to align feed with the chart
-
-  const url = `wss://stream.binance.com:9443/ws/${symbol}@kline_${binInterval}`;
-  let socket;
-  try {
-    socket = new WebSocket(url);
-  } catch (_) {
-    return;
-  }
-  ws = socket;
-
-  socket.onmessage = (event) => {
-    if (socket !== ws || !candleSeries || !lastBar) return;
-    let msg;
+  if (barTime > lastBarTime) {
+    // New candle period — also add a zero volume placeholder so scales stay aligned.
+    lastBar = { time: barTime, open: price, high: price, low: price, close: price };
+    lastBarTime = barTime;
     try {
-      msg = JSON.parse(event.data);
-    } catch (_) {
-      return;
-    }
-    const k = msg.k;
-    if (!k) return;
-
-    // Align the feed to the chart's price scale (e.g. PAX Gold spot vs gold
-    // futures, or Binance vs Yahoo). Basis is fixed once at first tick so the
-    // first live price matches the chart's last close, then fluctuates from
-    // there. Recomputed whenever a fresh poll resets the chart data.
-    if (feedBasis === null) {
-      feedBasis = lastChartClose ? lastChartClose - +k.c : 0;
-    }
-
-    const price = +k.c + feedBasis;
-    const barTime = Math.floor(k.t / 1000);
-
-    if (barTime > lastBarTime) {
-      // A brand-new candle period opened on the live feed: append it so the
-      // chart rolls forward instead of overwriting the previous bar.
-      lastBar = {
+      volumeSeries.update({
         time: barTime,
-        open: +k.o + feedBasis,
-        high: +k.h + feedBasis,
-        low: +k.l + feedBasis,
-        close: price,
-      };
-      lastBarTime = barTime;
-    } else {
-      // Same (or earlier-stamped) period: tick the forming candle in place.
-      // Yahoo stamps the partial bar at the fetch instant, so the Binance
-      // bar-open time is usually *earlier* — we pin the update to the chart's
-      // own last-bar time and just move close / extend the wicks.
-      lastBar.close = price;
-      lastBar.high = Math.max(lastBar.high, price);
-      lastBar.low = Math.min(lastBar.low, price);
-    }
+        value: 0,
+        color: "rgba(212,168,75,0.25)",
+      });
+    } catch (_) {}
+  } else {
+    // Same (or clock-skewed earlier) period: tick the forming candle in place.
+    lastBar.close = price;
+    lastBar.high = Math.max(lastBar.high, price);
+    lastBar.low = Math.min(lastBar.low, price);
+  }
 
+  try {
     candleSeries.update({
       time: lastBar.time,
       open: lastBar.open,
@@ -281,20 +339,88 @@ function connectRealtime() {
       low: lastBar.low,
       close: lastBar.close,
     });
-    lastChartClose = price;
+  } catch (_) {
+    // If update fails (duplicate/out-of-order), skip this tick.
+    return;
+  }
+  lastChartClose = price;
 
-    els.caption.textContent = `${lastSignal?.symbol || els.instrument.value} · ${fmtPrice(price)} · live`;
-  };
+  const now = Date.now();
+  if (now - lastUiTickMs >= 80) {
+    lastUiTickMs = now;
+    const sym = lastSignal?.symbol || els.instrument.value;
+    const src = liveSource ? ` · ${liveSource}` : "";
+    els.caption.textContent = `${sym} · ${fmtPrice(price)} · live${src}`;
+    if (els.live) els.live.textContent = `Live · ${fmtPrice(price)}`;
+  }
+}
 
-  socket.onclose = () => {
-    // Reconnect if this feed is still the desired one.
-    if (socket === ws) {
-      ws = null;
-      setTimeout(() => {
-        if (wsKey === desiredKey) connectRealtime();
-      }, 2000);
+function stopRealtime() {
+  if (tickerTimer) {
+    clearInterval(tickerTimer);
+    tickerTimer = null;
+  }
+}
+
+function startRealtime() {
+  const instrument = currentInstrument();
+  if (!hasLiveFeed(instrument)) {
+    stopRealtime();
+    els.caption.textContent = `${instrument} · no sub-second live feed — click Analyze`;
+    return;
+  }
+
+  stopRealtime();
+  const tickOnce = async () => {
+    try {
+      const res = await fetch(
+        `/api/live/ticker?instrument=${encodeURIComponent(instrument)}&_ts=${Date.now()}`,
+        { cache: "no-store" }
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      liveSource = data.source || "binance";
+      applyTick(+data.price, data.change_pct != null ? +data.change_pct : undefined);
+    } catch (_) {
+      /* keep last price; next tick retries */
     }
   };
+
+  tickOnce();
+  tickerTimer = setInterval(tickOnce, 200);
+}
+
+/** Seed the chart from Binance candles, then stream live ticks. */
+async function loadChartSeed() {
+  const instrument = currentInstrument();
+  const interval = els.interval.value;
+
+  if (!hasLiveFeed(instrument)) {
+    destroyChart();
+    els.caption.textContent = `${instrument} · click Analyze to load chart`;
+    return;
+  }
+
+  els.caption.textContent = `${instrument} · loading live chart…`;
+  try {
+    const res = await fetch(
+      `/api/live/klines?instrument=${encodeURIComponent(instrument)}` +
+        `&interval=${encodeURIComponent(interval)}&limit=80&_ts=${Date.now()}`,
+      { cache: "no-store" }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Live klines ${res.status}`);
+    }
+    const data = await res.json();
+    destroyChart();
+    drawChart(data.candles, lastSignal && lastSignal.side !== "WAIT" ? lastSignal : null);
+    startRealtime();
+  } catch (err) {
+    console.error(err);
+    els.caption.textContent = `${instrument} · live chart unavailable — ${err.message}`;
+    showToast(err.message || "Live chart unavailable");
+  }
 }
 
 function renderSignal(data) {
@@ -360,31 +486,55 @@ function renderSignal(data) {
   }
 
   els.disclaimer.textContent = data.disclaimer;
-  const stamp = new Date().toLocaleTimeString();
-  const liveTag = els.liveToggle?.checked ? ` · live · updated ${stamp}` : "";
-  els.caption.textContent = `${data.symbol} · last ${data.candles?.length || 0} candles · ATR ${Number(data.atr).toFixed(2)}${liveTag}`;
-  els.live.textContent = data.side === "WAIT" ? "Stand by" : "Signal live";
+  els.live.textContent = data.side === "WAIT" ? "Stand by" : "Signal ready";
 
-  drawChart(data.candles, data);
-  connectRealtime();
+  // Keep the live Binance chart moving — only overlay TP/SL/ENTRY lines.
+  // Do NOT replace the live seed with slow Yahoo candles (that caused the delay).
+  if (candleSeries && lastBar) {
+    priceLines.forEach((line) => {
+      try {
+        candleSeries.removePriceLine(line);
+      } catch (_) {}
+    });
+    priceLines = [];
+    if (data.side !== "WAIT") {
+      const guides = [
+        { price: data.take_profit, color: "#3dba7a", title: "TP" },
+        { price: data.entry, color: "#f0c56d", title: "ENTRY" },
+        { price: data.stop_loss, color: "#e25b4c", title: "SL" },
+      ];
+      guides.forEach((g) => {
+        priceLines.push(
+          candleSeries.createPriceLine({
+            price: g.price,
+            color: g.color,
+            lineWidth: 1,
+            lineStyle: LightweightCharts.LineStyle.Dashed,
+            axisLabelVisible: true,
+            title: g.title,
+          })
+        );
+      });
+    }
+  } else {
+    drawChart(data.candles, data);
+    startRealtime();
+  }
 }
 
-async function analyze({ silent = false } = {}) {
-  // Prevent overlapping requests from stacking (matters at 1s refresh).
+async function analyze() {
   if (fetching) return;
   fetching = true;
 
   const interval = els.interval.value;
-  const instrument = els.instrument.value;
+  const instrument = currentInstrument();
   const mode = els.mode.value;
   const account_balance = Number(els.balance.value) || 1000;
   const risk_percent = Number(els.risk.value) || 2;
 
-  if (!silent) {
-    els.btn.disabled = true;
-    els.btn.textContent = "Reading chart…";
-    els.live.textContent = "Analyzing";
-  }
+  els.btn.disabled = true;
+  els.btn.textContent = "Reading chart…";
+  els.live.textContent = "Analyzing";
 
   try {
     const params = new URLSearchParams({
@@ -403,74 +553,145 @@ async function analyze({ silent = false } = {}) {
     renderSignal(data);
   } catch (err) {
     console.error(err);
-    if (!silent) showToast(err.message || "Could not fetch signal");
-    els.live.textContent = silent ? "Live · retrying" : "Error";
+    showToast(err.message || "Could not fetch signal");
+    els.live.textContent = "Error";
   } finally {
     fetching = false;
-    if (!silent) {
-      els.btn.disabled = false;
-      els.btn.textContent = "Analyze chart";
-    }
+    els.btn.disabled = false;
+    els.btn.textContent = "Analyze chart";
   }
 }
 
-function stopLive() {
-  clearInterval(liveTimer);
-  clearInterval(countdownTimer);
-  liveTimer = null;
-  countdownTimer = null;
+function filteredInstruments() {
+  const q = instrumentFilter.trim().toLowerCase();
+  if (!q) return instrumentCatalog.slice(0, 60);
+  return instrumentCatalog
+    .filter((i) => {
+      const hay = `${i.key} ${i.label} ${i.name} ${i.keywords || ""} ${i.binance || ""}`.toLowerCase();
+      return hay.includes(q);
+    })
+    .slice(0, 80);
 }
 
-function startLive() {
-  stopLive();
-  const seconds = Number(els.refreshRate.value) || 30;
-  let remaining = seconds;
+function renderInstrumentList() {
+  const rows = filteredInstruments();
+  if (!els.instrumentList) return;
+  if (!rows.length) {
+    els.instrumentList.innerHTML = `<li class="empty">No markets match “${instrumentFilter}”</li>`;
+    els.instrumentList.hidden = false;
+    highlightIndex = -1;
+    return;
+  }
+  els.instrumentList.innerHTML = rows
+    .map((i, idx) => {
+      const live = i.live ? "Binance" : "Analyze only";
+      const active = idx === highlightIndex ? "active" : "";
+      return `<li class="${active}" data-key="${i.key}" role="option">
+        <span class="pair">${i.label}</span>
+        <span class="meta">${i.name} · ${live}</span>
+      </li>`;
+    })
+    .join("");
+  els.instrumentList.hidden = false;
+}
 
-  countdownTimer = setInterval(() => {
-    remaining -= 1;
-    if (remaining >= 0 && els.liveToggle.checked) {
-      els.live.textContent = `Live · next ${remaining}s`;
+function selectInstrument(key, { reload = true } = {}) {
+  const meta = instrumentMeta(key) || { key, label: key, name: key };
+  els.instrument.value = meta.key;
+  if (els.instrumentSearch) {
+    els.instrumentSearch.value = `${meta.label} · ${meta.name}`;
+  }
+  if (els.instrumentList) els.instrumentList.hidden = true;
+  highlightIndex = -1;
+  updateMarketQuote({ label: meta.label });
+  if (els.quotePrice) els.quotePrice.textContent = "—";
+  if (els.quoteChange) {
+    els.quoteChange.textContent = "—";
+    els.quoteChange.classList.remove("up", "down");
+    els.quoteChange.classList.add("flat");
+  }
+  if (reload) {
+    fitNext = true;
+    lastSignal = null;
+    els.board.hidden = true;
+    els.detail.hidden = true;
+    loadChartSeed();
+  }
+}
+
+async function loadInstrumentCatalog() {
+  const res = await fetch("/api/instruments", { cache: "no-store" });
+  const data = await res.json();
+  instrumentCatalog = data.instruments || [];
+  const initial = instrumentCatalog.find((i) => i.key === "BTCUSD") || instrumentCatalog[0];
+  if (initial) selectInstrument(initial.key, { reload: false });
+}
+
+function wireInstrumentSearch() {
+  if (!els.instrumentSearch || !els.instrumentList) return;
+
+  els.instrumentSearch.addEventListener("focus", () => {
+    instrumentFilter = "";
+    highlightIndex = 0;
+    renderInstrumentList();
+    els.instrumentSearch.select();
+  });
+
+  els.instrumentSearch.addEventListener("input", () => {
+    instrumentFilter = els.instrumentSearch.value;
+    highlightIndex = 0;
+    renderInstrumentList();
+  });
+
+  els.instrumentSearch.addEventListener("keydown", (e) => {
+    const rows = filteredInstruments();
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      highlightIndex = Math.min(highlightIndex + 1, rows.length - 1);
+      renderInstrumentList();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      highlightIndex = Math.max(highlightIndex - 1, 0);
+      renderInstrumentList();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const pick = rows[Math.max(0, highlightIndex)];
+      if (pick) selectInstrument(pick.key);
+    } else if (e.key === "Escape") {
+      els.instrumentList.hidden = true;
     }
-  }, 1000);
+  });
 
-  liveTimer = setInterval(async () => {
-    await analyze({ silent: true });
-    remaining = Number(els.refreshRate.value) || 30;
-  }, seconds * 1000);
+  els.instrumentList.addEventListener("mousedown", (e) => {
+    const li = e.target.closest("li[data-key]");
+    if (!li) return;
+    e.preventDefault();
+    selectInstrument(li.dataset.key);
+  });
 
-  analyze({ silent: true });
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest("#instrumentPicker")) {
+      els.instrumentList.hidden = true;
+    }
+  });
 }
 
 els.btn.addEventListener("click", () => analyze());
 
-els.liveToggle.addEventListener("change", () => {
-  if (els.liveToggle.checked) startLive();
-  else {
-    stopLive();
-    els.live.textContent = lastSignal?.side === "WAIT" ? "Stand by" : "Signal live";
-  }
-});
-
-els.refreshRate.addEventListener("change", () => {
-  if (els.liveToggle.checked) startLive();
-});
-
-els.instrument.addEventListener("change", () => {
-  fitNext = true;
-  if (els.liveToggle.checked) startLive();
-  else analyze();
-});
-
 els.mode.addEventListener("change", () => {
-  fitNext = true;
-  if (els.liveToggle.checked) startLive();
-  else analyze();
+  // Mode only affects the next Analyze click — chart keeps streaming.
 });
 
 els.interval.addEventListener("change", () => {
   fitNext = true;
-  if (els.liveToggle.checked) startLive();
-  else analyze();
+  loadChartSeed();
 });
 
-analyze();
+wireInstrumentSearch();
+loadInstrumentCatalog()
+  .then(() => loadChartSeed())
+  .catch((err) => {
+    console.error(err);
+    showToast("Could not load instrument list");
+    loadChartSeed();
+  });

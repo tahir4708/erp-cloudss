@@ -9,6 +9,10 @@ const els = {
   quotePrice: $("quotePrice"),
   quoteChange: $("quoteChange"),
   exnessBlock: $("exnessQuoteBlock"),
+  spotBlock: $("spotQuoteBlock"),
+  quoteSpotSym: $("quoteSpotSym"),
+  quoteSpotPrice: $("quoteSpotPrice"),
+  quoteSpotDiff: $("quoteSpotDiff"),
   quoteExnessSym: $("quoteExnessSym"),
   quoteExnessPrice: $("quoteExnessPrice"),
   quoteDiff: $("quoteDiff"),
@@ -81,7 +85,12 @@ let lastBar = null;
 let lastUiTickMs = 0;
 let liveSource = "";
 
-const EXNESS_BASE_KEYS = new Set(["XAUUSD", "BTCUSD"]);
+const EXNESS_BASE_KEYS = new Set(["XAUUSD", "XAGUSD", "BTCUSD"]);
+const SPOT_BASE_KEYS = new Set(["XAUUSD", "XAGUSD", "USOIL"]);
+
+function isSpotBaseKey(key) {
+  return SPOT_BASE_KEYS.has((key || "").toUpperCase());
+}
 
 const VENUE_CLASS = { BINANCE: "binance", EXNESS: "exness", YAHOO: "yahoo" };
 
@@ -116,6 +125,9 @@ function syncPriceSourceUi() {
   if (els.exnessBlock) {
     els.exnessBlock.hidden = !isExnessBaseKey(meta?.base_key);
   }
+  if (els.spotBlock) {
+    els.spotBlock.hidden = !isSpotBaseKey(meta?.base_key);
+  }
   if (els.priceSource) {
     if (venue === "EXNESS") {
       els.priceSource.value = "exness";
@@ -129,31 +141,62 @@ function syncPriceSourceUi() {
 
 async function refreshBrokerCompare() {
   const meta = currentMeta();
-  if (!meta || !isExnessBaseKey(meta.base_key)) {
-    if (els.exnessBlock) els.exnessBlock.hidden = true;
-    return;
+  const symbolId = currentSymbolId();
+  if (!meta) return;
+
+  if (els.spotBlock) {
+    els.spotBlock.hidden = !isSpotBaseKey(meta.base_key);
   }
-  if (els.exnessBlock) els.exnessBlock.hidden = false;
+  if (!isExnessBaseKey(meta.base_key)) {
+    if (els.exnessBlock) els.exnessBlock.hidden = true;
+    if (!isSpotBaseKey(meta.base_key)) return;
+  }
+
   try {
-    const res = await fetch(
-      `/api/broker/compare?instrument=${encodeURIComponent(meta.base_key)}&_ts=${Date.now()}`,
-      { cache: "no-store" }
-    );
+    const params = new URLSearchParams({
+      instrument: meta.base_key,
+      symbol_id: symbolId,
+      _ts: String(Date.now()),
+    });
+    const res = await fetch(`/api/broker/compare?${params.toString()}`, { cache: "no-store" });
     if (!res.ok) return;
     const data = await res.json();
+
+    const spot = data.spot_reference || {};
+    if (els.spotBlock && isSpotBaseKey(meta.base_key)) {
+      els.spotBlock.hidden = false;
+      if (els.quoteSpotSym) els.quoteSpotSym.textContent = spot.symbol || spot.label || "Spot";
+      if (els.quoteSpotPrice && spot.price != null) {
+        els.quoteSpotPrice.textContent = fmtPrice(+spot.price);
+      }
+      if (els.quoteSpotDiff && data.diff_chart_spot) {
+        const d = +data.diff_chart_spot.amount;
+        const sign = d > 0 ? "+" : "";
+        els.quoteSpotDiff.textContent = `Chart ${sign}${d.toFixed(2)}`;
+        els.quoteSpotDiff.classList.remove("up", "down", "estimated");
+        els.quoteSpotDiff.classList.add(d > 0 ? "up" : d < 0 ? "down" : "flat");
+      }
+    }
+
+    if (!isExnessBaseKey(meta.base_key)) return;
+
+    if (els.exnessBlock) els.exnessBlock.hidden = false;
     const ex = data.exness || {};
     if (els.quoteExnessSym) els.quoteExnessSym.textContent = ex.symbol || "—";
     if (els.quoteExnessPrice && ex.mid != null) {
       els.quoteExnessPrice.textContent = fmtPrice(+ex.mid);
     }
-    if (els.quoteDiff && data.diff) {
-      const d = +data.diff.amount;
+    if (els.quoteDiff && data.diff_exness_spot) {
+      const d = +data.diff_exness_spot.amount;
       const sign = d > 0 ? "+" : "";
       const est = ex.status === "estimated" ? " est." : "";
-      els.quoteDiff.textContent = `${sign}${d.toFixed(2)}${est}`;
+      els.quoteDiff.textContent = `vs Spot ${sign}${d.toFixed(2)}${est}`;
       els.quoteDiff.classList.remove("up", "down", "estimated");
       if (ex.status === "estimated") els.quoteDiff.classList.add("estimated");
       else els.quoteDiff.classList.add(d > 0 ? "up" : d < 0 ? "down" : "flat");
+    }
+    if (data.alignment_note && data.diff_chart_spot && Math.abs(+data.diff_chart_spot.amount) > 1) {
+      els.caption.textContent = data.alignment_note.slice(0, 120);
     }
   } catch (_) {
     /* optional panel */

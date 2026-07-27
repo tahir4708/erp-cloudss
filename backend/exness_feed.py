@@ -11,6 +11,7 @@ import httpx
 
 from backend.config import get_instrument
 from backend.live_feed import fetch_live_ticker, has_live_feed
+from backend.reference_prices import fetch_spot_ticker, has_spot_reference
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ HEADERS = {
 # Exness MT5 symbol names (standard account suffix "m")
 EXNESS_SYMBOL_MAP: dict[str, str] = {
     "XAUUSD": "XAUUSDm",
+    "XAGUSD": "XAGUSDm",
     "BTCUSD": "BTCUSDm",
 }
 
@@ -105,9 +107,9 @@ def _estimate_exness_quote(instrument: str, reference_price: float) -> dict[str,
         "source": "exness",
         "status": "estimated",
         "note": (
-            "Estimated from chart feed + offset. "
+            "Estimated from spot/TV index + offset. "
             "Run exness_bridge.py on your PC for live Exness prices, "
-            "or set EXNESS_OFFSET_XAUUSD / EXNESS_OFFSET_BTCUSD."
+            "or set EXNESS_OFFSET_XAUUSD / EXNESS_OFFSET_XAGUSD / EXNESS_OFFSET_BTCUSD."
         ),
     }
 
@@ -144,33 +146,61 @@ def fetch_exness_quote(instrument: str) -> dict[str, Any]:
         _quote_cache[key] = (now, payload)
         return payload
 
-    # Reference price for estimate
-    ref_price: float | None = None
-    if has_live_feed(key):
-        try:
-            ref_price = float(fetch_live_ticker(key)["price"])
-        except Exception:  # noqa: BLE001
-            pass
-    if ref_price is None:
-        inst = get_instrument(key)
-        from backend.data_feed import fetch_ohlcv
-
-        df = fetch_ohlcv(interval="15m", symbol=str(inst["symbol"]), instrument=key)
-        ref_price = float(df.iloc[-1]["close"])
-
+    ref_price, _ = _reference_price(key)
     payload = _estimate_exness_quote(key, ref_price)
     _quote_cache[key] = (now, payload)
     return payload
 
 
-def compare_prices(instrument: str) -> dict[str, Any]:
-    """Side-by-side: chart/reference feed vs Exness (for Gold & BTC)."""
+def _reference_price(instrument: str) -> tuple[float, str]:
+    """Best reference for Exness CFD alignment (spot/TV index preferred over crypto tokens)."""
+    key = instrument.upper()
+    if has_spot_reference(key):
+        try:
+            spot = fetch_spot_ticker(key)
+            return float(spot["price"]), f"spot:{spot['symbol']}"
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Spot reference failed for %s: %s", key, exc)
+    if has_live_feed(key):
+        try:
+            t = fetch_live_ticker(key)
+            return float(t["price"]), str(t.get("source", "binance"))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Binance reference failed for %s: %s", key, exc)
+    inst = get_instrument(key)
+    from backend.data_feed import fetch_ohlcv
+
+    df = fetch_ohlcv(interval="15m", symbol=str(inst["symbol"]), instrument=key)
+    return float(df.iloc[-1]["close"]), "yahoo"
+
+
+def compare_prices(instrument: str, chart_symbol_id: str | None = None) -> dict[str, Any]:
+    """Side-by-side: chart feed, spot/TV reference, and Exness (Gold, Silver, BTC)."""
     key = instrument.upper()
     if not supports_exness(key):
         raise RuntimeError(f"Broker compare only for {', '.join(sorted(EXNESS_SUPPORTED))}")
 
+    chart: dict[str, Any] = {"instrument": key, "status": "unavailable"}
+    if chart_symbol_id:
+        try:
+            from backend.market_data import fetch_market_ticker
+
+            t = fetch_market_ticker(chart_symbol_id)
+            chart = {
+                "instrument": key,
+                "symbol_id": chart_symbol_id,
+                "price": round(float(t["price"]), 2),
+                "source": t.get("source", "chart"),
+                "symbol": t.get("symbol"),
+                "label": t.get("label"),
+                "change_pct": t.get("change_pct"),
+                "status": "live",
+            }
+        except Exception as exc:  # noqa: BLE001
+            chart["error"] = str(exc)
+
     reference: dict[str, Any] = {"instrument": key, "status": "unavailable"}
-    if has_live_feed(key):
+    if has_live_feed(key) and not chart.get("price"):
         try:
             t = fetch_live_ticker(key)
             reference = {
@@ -180,29 +210,80 @@ def compare_prices(instrument: str) -> dict[str, Any]:
                 "symbol": t.get("symbol"),
                 "change_pct": t.get("change_pct"),
                 "status": "live",
+                "label": "Binance default",
             }
         except Exception as exc:  # noqa: BLE001
             reference["error"] = str(exc)
+    elif chart.get("price"):
+        reference = dict(chart)
+
+    spot_ref: dict[str, Any] | None = None
+    if has_spot_reference(key):
+        try:
+            spot = fetch_spot_ticker(key)
+            spot_ref = {
+                "instrument": key,
+                "price": round(float(spot["price"]), 2),
+                "source": spot.get("source", "yahoo_spot"),
+                "symbol": spot.get("symbol"),
+                "label": spot.get("label"),
+                "status": spot.get("status", "live"),
+                "tv_hint": spot.get("tv_hint"),
+            }
+        except Exception as exc:  # noqa: BLE001
+            spot_ref = {"instrument": key, "status": "unavailable", "error": str(exc)}
 
     exness = fetch_exness_quote(key)
-    ref_mid = reference.get("price")
+    ref_mid = (spot_ref or reference).get("price")
+    chart_mid = chart.get("price") or reference.get("price")
     ex_mid = exness.get("mid")
-    diff: dict[str, Any] | None = None
+
+    diff_exness_spot: dict[str, Any] | None = None
     if ref_mid is not None and ex_mid is not None:
         delta = round(ex_mid - ref_mid, 2)
         pct = round((delta / ref_mid) * 100, 4) if ref_mid else 0.0
-        diff = {"amount": delta, "pct": pct}
+        diff_exness_spot = {"amount": delta, "pct": pct, "label": "Exness vs Spot/TV"}
+
+    diff_chart_spot: dict[str, Any] | None = None
+    if chart_mid is not None and spot_ref and spot_ref.get("price") is not None:
+        spot_p = float(spot_ref["price"])
+        delta = round(chart_mid - spot_p, 2)
+        pct = round((delta / spot_p) * 100, 4) if spot_p else 0.0
+        diff_chart_spot = {"amount": delta, "pct": pct, "label": "Chart vs Spot/TV"}
+
+    # Legacy field: exness vs primary reference
+    diff = diff_exness_spot
+
+    alignment_note = None
+    if exness.get("status") == "estimated":
+        alignment_note = (
+            "Exness price is estimated from spot index + offset. "
+            "Run exness_bridge.py for exact Exness terminal prices, "
+            "or set EXNESS_OFFSET_XAUUSD / EXNESS_OFFSET_BTCUSD."
+        )
+    if spot_ref and chart.get("price") and abs(diff_chart_spot.get("amount", 0) or 0) > 2:
+        alignment_note = (
+            (alignment_note or "")
+            + " Chart shows Binance token/futures; Spot/TV shows COMEX index — "
+            "they are different products; pick the symbol that matches your broker."
+        ).strip()
 
     return {
         "instrument": key,
+        "chart": chart,
         "reference": reference,
+        "spot_reference": spot_ref,
         "exness": exness,
         "diff": diff,
+        "diff_exness_spot": diff_exness_spot,
+        "diff_chart_spot": diff_chart_spot,
         "bridge_configured": bool(_bridge_url()),
         "offsets": {
             "XAUUSD": _offset_for("XAUUSD"),
+            "XAGUSD": _offset_for("XAGUSD"),
             "BTCUSD": _offset_for("BTCUSD"),
         },
+        "alignment_note": alignment_note,
     }
 
 

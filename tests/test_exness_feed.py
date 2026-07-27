@@ -12,20 +12,27 @@ from backend.exness_feed import (
 )
 
 
-def test_supports_gold_and_btc():
+def test_supports_gold_silver_and_btc():
     assert supports_exness("XAUUSD")
+    assert supports_exness("XAGUSD")
     assert supports_exness("BTCUSD")
     assert not supports_exness("ETHUSD")
 
 
 def test_exness_symbol_mapping():
     assert exness_symbol("XAUUSD") == "XAUUSDm"
+    assert exness_symbol("XAGUSD") == "XAGUSDm"
     assert exness_symbol("BTCUSD") == "BTCUSDm"
 
 
-@patch("backend.exness_feed.fetch_live_ticker")
-def test_estimate_exness_quote(mock_ticker):
-    mock_ticker.return_value = {"price": 4000.0, "source": "binance", "symbol": "PAXGUSDT"}
+@patch("backend.exness_feed.fetch_spot_ticker")
+def test_estimate_exness_quote(mock_spot):
+    mock_spot.return_value = {
+        "price": 4000.0,
+        "source": "yahoo_spot",
+        "symbol": "GC=F",
+        "label": "XAU/USD Spot",
+    }
     q = fetch_exness_quote("XAUUSD")
     assert q["symbol"] == "XAUUSDm"
     assert q["status"] == "estimated"

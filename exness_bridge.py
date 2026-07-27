@@ -29,7 +29,7 @@ from fastapi import FastAPI, HTTPException
 
 app = FastAPI(title="Exness MT5 Bridge", version="1.0.0")
 
-SYMBOLS = ("XAUUSDm", "BTCUSDm")
+SYMBOLS = ("XAUUSDm", "XAGUSDm", "BTCUSDm")
 
 _INTERVAL_MAP: dict[str, int] = {}
 

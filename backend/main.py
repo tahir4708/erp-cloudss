@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from backend.config import DEFAULT_INSTRUMENT, INSTRUMENTS, is_known_instrument, settings
 from backend.exness_feed import compare_prices, fetch_exness_quote, supports_exness
+from backend.reference_prices import fetch_spot_ticker, has_spot_reference
 from backend.market_data import fetch_market_klines, fetch_market_ticker
 from backend.signal_engine import analyze_xauusd, quick_backtest_hint
 from backend.symbol_catalog import DEFAULT_SYMBOL_ID, is_known_symbol, parse_symbol_id, search_symbols
@@ -195,7 +196,7 @@ def get_signal(
         payload = signal.to_dict()
         if supports_exness(ms.base_key):
             try:
-                payload["broker_compare"] = compare_prices(ms.base_key)
+                payload["broker_compare"] = compare_prices(ms.base_key, sid)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Broker compare failed: %s", exc)
                 payload["broker_compare"] = None
@@ -232,16 +233,34 @@ def post_signal(body: AnalyzeRequest):
 
 
 @app.get("/api/broker/compare")
-def broker_compare(instrument: str = Query(default="XAUUSD")):
-    """Reference (Binance) vs Exness price — Gold & BTC only."""
+def broker_compare(
+    instrument: str = Query(default="XAUUSD"),
+    symbol_id: str | None = Query(default=None, description="Active chart VENUE:SYMBOL"),
+):
+    """Chart vs Spot/TV reference vs Exness — Gold, Silver, BTC."""
     instrument = _require_instrument(instrument)
     if not supports_exness(instrument):
         raise HTTPException(
             status_code=400,
-            detail="Exness compare is available for XAUUSD (Gold) and BTCUSD only",
+            detail="Exness compare is available for XAUUSD, XAGUSD, and BTCUSD",
         )
+    sid = symbol_id
+    if sid and not is_known_symbol(sid):
+        sid = None
     try:
-        return compare_prices(instrument)
+        return compare_prices(instrument, sid)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/reference/spot")
+def reference_spot(instrument: str = Query(default="XAUUSD")):
+    """TradingView-aligned spot index (Yahoo GC=F / SI=F)."""
+    instrument = _require_instrument(instrument)
+    if not has_spot_reference(instrument):
+        raise HTTPException(status_code=400, detail=f"No spot reference for {instrument}")
+    try:
+        return fetch_spot_ticker(instrument)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

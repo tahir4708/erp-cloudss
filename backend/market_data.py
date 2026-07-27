@@ -11,6 +11,7 @@ from backend.config import binance_symbol, get_instrument, settings
 from backend.data_feed import _fetch_binance_futures_ohlcv, _fetch_binance_ohlcv, fetch_ohlcv as _legacy_fetch
 from backend.exness_feed import _bridge_url, _fetch_bridge_quote, fetch_exness_quote
 from backend.live_feed import fetch_live_ticker
+from backend.reference_prices import fetch_spot_ohlcv, has_spot_reference
 from backend.symbol_catalog import MarketSymbol, parse_symbol_id
 
 logger = logging.getLogger(__name__)
@@ -58,7 +59,7 @@ def _scale_df(df: pd.DataFrame, ratio: float) -> pd.DataFrame:
 
 
 def _fetch_exness_ohlcv(ms: MarketSymbol, interval: str, limit: int) -> pd.DataFrame:
-    """Exness candles via MT5 bridge, else scaled from Binance reference."""
+    """Exness candles via MT5 bridge, else spot/TV index scaled to Exness mid."""
     bridge_rows = _fetch_exness_klines_bridge(ms.symbol, interval, limit)
     if bridge_rows:
         idx = pd.to_datetime([int(c["time"]) for c in bridge_rows], unit="s", utc=True).tz_convert(None)
@@ -73,20 +74,28 @@ def _fetch_exness_ohlcv(ms: MarketSymbol, interval: str, limit: int) -> pd.DataF
             index=idx,
         )
 
+    target_mid = float(fetch_exness_quote(ms.base_key)["mid"])
+
+    # Gold/silver: Yahoo GC=F / SI=F matches TradingView XAU/XAG much better than PAXG token
+    if has_spot_reference(ms.base_key):
+        df = fetch_spot_ohlcv(ms.base_key, interval=interval, limit=limit)
+        ref_last = float(df.iloc[-1]["close"])
+        if ref_last > 0:
+            ratio = target_mid / ref_last
+            return _scale_df(df, ratio)
+        return df
+
     ref_bn = _reference_binance_for(ms)
     if not ref_bn:
         raise RuntimeError(f"No reference feed to estimate Exness chart for {ms.symbol}")
 
     df = _fetch_binance_ohlcv(ref_bn, interval, limit=limit)
     try:
-        ex_mid = float(fetch_exness_quote(ms.base_key)["mid"])
-        from backend.live_feed import fetch_live_ticker
-
         ref_mid = float(fetch_live_ticker(ms.base_key)["price"])
-        ratio = ex_mid / ref_mid if ref_mid else 1.0
+        ratio = target_mid / ref_mid if ref_mid else 1.0
     except Exception:  # noqa: BLE001
         ratio = 1.0
-        logger.warning("Using unscaled Exness proxy for %s", ms.symbol)
+        logger.warning("Using unscaled Binance proxy for %s", ms.symbol)
 
     return _scale_df(df, ratio)
 

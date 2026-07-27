@@ -162,9 +162,9 @@ body {
   white-space: nowrap;
 }
 
-.quote-block.exness {
-  border-color: rgba(212, 168, 75, 0.45);
-  background: rgba(255, 252, 245, 0.95);
+.quote-block.spot {
+  border-color: rgba(90, 74, 138, 0.35);
+  background: rgba(248, 246, 252, 0.95);
 }
 
 .quote-label {

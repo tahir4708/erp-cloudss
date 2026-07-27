@@ -8,8 +8,9 @@ from typing import Any
 import pandas as pd
 
 from backend.config import binance_symbol, get_instrument, settings
-from backend.data_feed import _fetch_binance_ohlcv, fetch_ohlcv as _legacy_fetch
+from backend.data_feed import _fetch_binance_futures_ohlcv, _fetch_binance_ohlcv, fetch_ohlcv as _legacy_fetch
 from backend.exness_feed import _bridge_url, _fetch_bridge_quote, fetch_exness_quote
+from backend.live_feed import fetch_live_ticker
 from backend.symbol_catalog import MarketSymbol, parse_symbol_id
 
 logger = logging.getLogger(__name__)
@@ -97,7 +98,12 @@ def fetch_market_ohlcv(symbol_id: str, interval: str | None = None) -> pd.DataFr
     limit = settings.lookback_bars
 
     if ms.venue == "BINANCE":
-        df = _fetch_binance_ohlcv(ms.symbol, interval, limit=limit)
+        inst = get_instrument(ms.base_key)
+        bf = inst.get("binance_futures")
+        if bf and ms.symbol.upper() == str(bf).upper():
+            df = _fetch_binance_futures_ohlcv(ms.symbol, interval, limit=limit)
+        else:
+            df = _fetch_binance_ohlcv(ms.symbol, interval, limit=limit)
     elif ms.venue == "EXNESS":
         df = _fetch_exness_ohlcv(ms, interval, limit)
     elif ms.venue == "YAHOO":
@@ -121,28 +127,34 @@ def fetch_market_ticker(symbol_id: str) -> dict[str, Any]:
     """Last price for symbol id."""
     ms = parse_symbol_id(symbol_id)
     if ms.venue == "BINANCE":
-        from backend.live_feed import BINANCE_BASES, _client
+        from backend.live_feed import _fetch_futures_ticker, _fetch_spot_ticker
 
-        errors: list[str] = []
-        for base in BINANCE_BASES:
-            try:
-                with _client() as client:
-                    r = client.get(f"{base}/api/v3/ticker/24hr", params={"symbol": ms.symbol})
-                    r.raise_for_status()
-                    data = r.json()
-                price = float(data["lastPrice"])
-                return {
-                    "symbol_id": ms.id,
-                    "venue": ms.venue,
-                    "symbol": ms.symbol,
-                    "label": ms.label,
-                    "price": price,
-                    "change_pct": float(data.get("priceChangePercent") or 0),
-                    "source": "binance",
-                }
-            except Exception as exc:  # noqa: BLE001
-                errors.append(str(exc))
-        raise RuntimeError(f"Binance ticker failed for {ms.symbol}: {'; '.join(errors)}")
+        inst = get_instrument(ms.base_key)
+        bf = inst.get("binance_futures")
+        is_futures = bf and ms.symbol.upper() == str(bf).upper()
+        try:
+            tick = _fetch_futures_ticker(ms.symbol) if is_futures else _fetch_spot_ticker(ms.symbol)
+        except Exception:
+            t = fetch_live_ticker(ms.base_key)
+            return {
+                "symbol_id": ms.id,
+                "venue": ms.venue,
+                "symbol": ms.symbol,
+                "label": ms.label,
+                "price": t["price"],
+                "change_pct": t.get("change_pct"),
+                "source": t.get("source", "binance"),
+            }
+        return {
+            "symbol_id": ms.id,
+            "venue": ms.venue,
+            "symbol": ms.symbol,
+            "label": ms.label,
+            "price": tick["price"],
+            "change_pct": tick.get("change_pct"),
+            "source": tick["source"],
+            "market": "futures" if is_futures else "spot",
+        }
     if ms.venue == "EXNESS":
         q = fetch_exness_quote(ms.base_key)
         return {

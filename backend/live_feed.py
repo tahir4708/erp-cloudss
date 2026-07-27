@@ -30,6 +30,11 @@ BINANCE_BASES = (
     "https://data-api.binance.vision",
 )
 
+BINANCE_FUTURES_BASES = (
+    "https://fapi.binance.com",
+    "https://fstream.binance.com",
+)
+
 # Cached Binance USDT spot markets: [{key, binance, label, name, ...}, ...]
 _markets_cache: list[dict[str, Any]] | None = None
 _markets_cached_at = 0.0
@@ -101,7 +106,7 @@ def fetch_binance_usdt_markets(force: bool = False) -> list[dict[str, Any]]:
 
 
 def binance_pair_for_key(instrument: str) -> str | None:
-    """Resolve instrument key (ETHUSD / ETHUSDT) to Binance symbol."""
+    """Resolve instrument key (ETHUSD / ETHUSDT) to Binance spot symbol."""
     from backend.config import INSTRUMENTS
 
     key = (instrument or "").upper()
@@ -120,17 +125,33 @@ def binance_pair_for_key(instrument: str) -> str | None:
     return None
 
 
+def binance_futures_pair_for_key(instrument: str) -> str | None:
+    """Resolve instrument key to Binance USDT-margined futures symbol."""
+    from backend.config import INSTRUMENTS, binance_futures_symbol
+
+    key = (instrument or "").upper()
+    if key in INSTRUMENTS and INSTRUMENTS[key].get("binance_futures"):
+        return str(INSTRUMENTS[key]["binance_futures"])
+    bf = binance_futures_symbol(key)
+    return bf
+
+
+def binance_feed_symbol(instrument: str) -> tuple[str, str] | None:
+    """Return (symbol, market) where market is spot or futures."""
+    spot = binance_pair_for_key(instrument)
+    if spot:
+        return spot, "spot"
+    fut = binance_futures_pair_for_key(instrument)
+    if fut:
+        return fut, "futures"
+    return None
+
+
 def has_live_feed(instrument: str) -> bool:
-    return bool(binance_pair_for_key(instrument))
+    return binance_feed_symbol(instrument) is not None
 
 
-def fetch_live_ticker(instrument: str) -> dict[str, Any]:
-    """Binance last price + today's (24h) change."""
-    key = (instrument or "BTCUSD").upper()
-    bn = binance_pair_for_key(key)
-    if not bn:
-        raise RuntimeError(f"No Binance live feed for {key}")
-
+def _fetch_spot_ticker(bn: str) -> dict[str, Any]:
     errors: list[str] = []
     for base in BINANCE_BASES:
         try:
@@ -138,37 +159,82 @@ def fetch_live_ticker(instrument: str) -> dict[str, Any]:
                 r = client.get(f"{base}/api/v3/ticker/24hr", params={"symbol": bn})
                 r.raise_for_status()
                 data = r.json()
-            price = float(data["lastPrice"])
-            change_pct = float(data["priceChangePercent"])
-            change = float(data["priceChange"])
             return {
-                "instrument": key,
-                "price": price,
-                "change": change,
-                "change_pct": change_pct,
+                "price": float(data["lastPrice"]),
+                "change": float(data["priceChange"]),
+                "change_pct": float(data["priceChangePercent"]),
                 "high": float(data.get("highPrice") or 0),
                 "low": float(data.get("lowPrice") or 0),
                 "source": "binance",
-                "symbol": bn,
-                "ts": None,
             }
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"binance({base}): {exc}")
+            errors.append(f"spot({base}): {exc}")
+    raise RuntimeError("; ".join(errors))
 
-    raise RuntimeError("; ".join(errors) or f"Live ticker failed for {key}")
+
+def _fetch_futures_ticker(bn: str) -> dict[str, Any]:
+    errors: list[str] = []
+    for base in BINANCE_FUTURES_BASES:
+        try:
+            with _client() as client:
+                r = client.get(f"{base}/fapi/v1/ticker/24hr", params={"symbol": bn})
+                r.raise_for_status()
+                data = r.json()
+            return {
+                "price": float(data["lastPrice"]),
+                "change": float(data.get("priceChange") or 0),
+                "change_pct": float(data.get("priceChangePercent") or 0),
+                "high": float(data.get("highPrice") or 0),
+                "low": float(data.get("lowPrice") or 0),
+                "source": "binance_futures",
+            }
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"futures({base}): {exc}")
+    raise RuntimeError("; ".join(errors))
+
+
+def fetch_live_ticker(instrument: str) -> dict[str, Any]:
+    """Binance last price + 24h change (spot or USDT-margined futures)."""
+    key = (instrument or "BTCUSD").upper()
+    feed = binance_feed_symbol(key)
+    if not feed:
+        raise RuntimeError(f"No Binance live feed for {key}")
+
+    bn, market = feed
+    try:
+        tick = _fetch_futures_ticker(bn) if market == "futures" else _fetch_spot_ticker(bn)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(str(exc)) from exc
+
+    return {
+        "instrument": key,
+        "price": tick["price"],
+        "change": tick["change"],
+        "change_pct": tick["change_pct"],
+        "high": tick["high"],
+        "low": tick["low"],
+        "source": tick["source"],
+        "symbol": bn,
+        "market": market,
+        "ts": None,
+    }
 
 
 def fetch_live_klines(instrument: str, interval: str = "15m", limit: int = 80) -> list[dict[str, Any]]:
-    """OHLCV seed candles from Binance."""
+    """OHLCV seed candles from Binance spot or futures."""
     key = (instrument or "BTCUSD").upper()
-    bn = binance_pair_for_key(key)
-    if not bn:
+    feed = binance_feed_symbol(key)
+    if not feed:
         raise RuntimeError(f"No Binance live feed for {key}")
 
+    bn, market = feed
     limit = max(20, min(int(limit), 200))
     bin_iv = INTERVAL_TO_BINANCE.get(interval, "15m")
-    errors: list[str] = []
 
+    if market == "futures":
+        return _fetch_futures_klines(bn, bin_iv, limit)
+
+    errors: list[str] = []
     for base in BINANCE_BASES:
         try:
             with _client() as client:
@@ -196,3 +262,33 @@ def fetch_live_klines(instrument: str, interval: str = "15m", limit: int = 80) -
             errors.append(f"binance({base}): {exc}")
 
     raise RuntimeError("; ".join(errors) or f"Live klines failed for {key}")
+
+
+def _fetch_futures_klines(bn: str, bin_iv: str, limit: int) -> list[dict[str, Any]]:
+    errors: list[str] = []
+    for base in BINANCE_FUTURES_BASES:
+        try:
+            with _client() as client:
+                r = client.get(
+                    f"{base}/fapi/v1/klines",
+                    params={"symbol": bn, "interval": bin_iv, "limit": limit},
+                )
+                r.raise_for_status()
+                rows = r.json()
+            out: list[dict[str, Any]] = []
+            for k in rows:
+                out.append(
+                    {
+                        "time": int(k[0]) // 1000,
+                        "open": float(k[1]),
+                        "high": float(k[2]),
+                        "low": float(k[3]),
+                        "close": float(k[4]),
+                        "volume": float(k[5]),
+                    }
+                )
+            if out:
+                return out
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"futures({base}): {exc}")
+    raise RuntimeError("; ".join(errors) or f"Futures klines failed for {bn}")

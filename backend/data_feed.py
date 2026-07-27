@@ -8,8 +8,8 @@ from typing import Any
 import httpx
 import pandas as pd
 
-from backend.config import binance_symbol, get_instrument, settings
-from backend.live_feed import BINANCE_BASES, INTERVAL_TO_BINANCE
+from backend.config import binance_futures_symbol, binance_symbol, get_instrument, settings
+from backend.live_feed import BINANCE_BASES, BINANCE_FUTURES_BASES, INTERVAL_TO_BINANCE
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +108,44 @@ def _fetch_binance_ohlcv(binance_symbol: str, interval: str, limit: int = 200) -
     raise RuntimeError(f"Binance OHLCV failed for {binance_symbol}: {'; '.join(errors)}")
 
 
+def _fetch_binance_futures_ohlcv(futures_symbol: str, interval: str, limit: int = 200) -> pd.DataFrame:
+    """Pull OHLCV from Binance USDT-margined futures (e.g. XAGUSDT silver perp)."""
+    bin_iv = INTERVAL_TO_BINANCE.get(interval, interval)
+    limit = max(60, min(limit, 500))
+    errors: list[str] = []
+
+    for base in BINANCE_FUTURES_BASES:
+        try:
+            with httpx.Client(timeout=15.0, headers=HEADERS, follow_redirects=True) as client:
+                response = client.get(
+                    f"{base}/fapi/v1/klines",
+                    params={"symbol": futures_symbol, "interval": bin_iv, "limit": limit},
+                )
+                response.raise_for_status()
+                rows = response.json()
+            if not rows:
+                continue
+            idx = pd.to_datetime([int(r[0]) for r in rows], unit="ms", utc=True).tz_convert(None)
+            df = pd.DataFrame(
+                {
+                    "open": [float(r[1]) for r in rows],
+                    "high": [float(r[2]) for r in rows],
+                    "low": [float(r[3]) for r in rows],
+                    "close": [float(r[4]) for r in rows],
+                    "volume": [float(r[5]) for r in rows],
+                },
+                index=idx,
+            )
+            logger.info(
+                "Fetched %s Binance futures bars for %s (%s)", len(df), futures_symbol, bin_iv
+            )
+            return df
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{base}: {exc}")
+
+    raise RuntimeError(f"Binance futures OHLCV failed for {futures_symbol}: {'; '.join(errors)}")
+
+
 def fetch_ohlcv(
     interval: str | None = None,
     period: str | None = None,
@@ -119,6 +157,7 @@ def fetch_ohlcv(
     symbol = symbol or settings.symbol
 
     bn = binance_symbol(instrument) if instrument else None
+    bf = binance_futures_symbol(instrument) if instrument else None
     if not bn:
         # Fallback: symbol itself may already be a Binance pair (e.g. ETHUSDT)
         inst = get_instrument(instrument) if instrument else None
@@ -128,6 +167,8 @@ def fetch_ohlcv(
             bn = str(symbol).upper()
         elif instrument:
             bn = binance_symbol(instrument)
+        if inst and inst.get("binance_futures") and not bf:
+            bf = str(inst["binance_futures"])
 
     if bn:
         try:
@@ -136,7 +177,16 @@ def fetch_ohlcv(
                 df = df.iloc[-settings.lookback_bars :]
             return df
         except Exception as binance_exc:  # noqa: BLE001
-            logger.warning("Binance fetch failed for %s, falling back to Yahoo: %s", bn, binance_exc)
+            logger.warning("Binance spot fetch failed for %s: %s", bn, binance_exc)
+
+    if bf:
+        try:
+            df = _fetch_binance_futures_ohlcv(bf, requested_interval, limit=settings.lookback_bars)
+            if len(df) > settings.lookback_bars:
+                df = df.iloc[-settings.lookback_bars :]
+            return df
+        except Exception as fut_exc:  # noqa: BLE001
+            logger.warning("Binance futures fetch failed for %s, falling back: %s", bf, fut_exc)
 
     range_ = period or INTERVAL_RANGE_MAP.get(requested_interval, settings.default_period)
     yahoo_interval = YAHOO_INTERVAL_MAP.get(requested_interval, requested_interval)

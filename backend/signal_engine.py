@@ -243,20 +243,71 @@ def _votes(snap: dict) -> list[Vote]:
     return votes
 
 
+_CORE_VOTES = frozenset(
+    {
+        "Market Bias",
+        "EMA Trend",
+        "EMA Cross",
+        "MACD",
+        "ADX",
+        "Candle Trigger",
+        "Structure",
+        "Level",
+    }
+)
+
+
+def _count_core(votes: list[Vote] | list[CandleVote], side: str) -> int:
+    return sum(1 for v in votes if v.side == side and v.name in _CORE_VOTES)
+
+
+def _weight_for(votes: list[Vote] | list[CandleVote], side: str) -> float:
+    return sum(v.weight for v in votes if v.side == side)
+
+
+def _grade_setup(
+    side: Side,
+    edge: float,
+    core_aligned: int,
+    aligned_w: float,
+    opposing_w: float,
+) -> tuple[str, float, float]:
+    """Map confluence to confidence + win probability (target up to ~90% on A-setups)."""
+    target = settings.target_win_probability
+    if side == "WAIT":
+        return "WAIT", 50.0, 50.0
+
+    # A-grade: strong multi-layer agreement
+    if edge >= 0.22 and core_aligned >= 4 and opposing_w < aligned_w * 0.4:
+        conf = float(np.clip(84 + edge * 18, 84, 92))
+        win = float(np.clip(target - 2 + edge * 8, 86, target))
+        return "A", conf, win
+    if edge >= 0.16 and core_aligned >= 3 and opposing_w < aligned_w * 0.5:
+        conf = float(np.clip(76 + edge * 22, 74, 88))
+        win = float(np.clip(78 + edge * 35, 72, 88))
+        return "B", conf, win
+    if edge >= settings.min_edge_to_trade and core_aligned >= 2:
+        conf = float(np.clip(62 + edge * 40, 58, 82))
+        win = float(np.clip(65 + edge * 45, 62, 80))
+        return "C", conf, win
+    if edge >= settings.min_edge_to_trade:
+        conf = float(np.clip(55 + edge * 35, 52, 72))
+        win = float(np.clip(58 + edge * 40, 55, 72))
+        return "D", conf, win
+    return "WAIT", 50.0, 50.0
+
+
 def _score(
     votes: list[Vote] | list[CandleVote],
     *,
     wait_msg: str,
     enforce_range_gate: bool = True,
 ) -> tuple[Side, float, float, list[str]]:
-    # Playbook §1 hard rule (indicator mode): if the top-down 50/200 bias is
-    # range/neutral, no-trade. Candle mode keeps Market Bias as a soft vote
-    # only — pattern + structure decide the side.
     bias = next((v for v in votes if v.name == "Market Bias"), None)
     range_mode = bias is not None and bias.side == "NEUTRAL"
 
-    buy = sum(v.weight for v in votes if v.side == "BUY")
-    sell = sum(v.weight for v in votes if v.side == "SELL")
+    buy = _weight_for(votes, "BUY")
+    sell = _weight_for(votes, "SELL")
     total = buy + sell + sum(v.weight for v in votes if v.side == "NEUTRAL")
     total = max(total, 1e-9)
 
@@ -273,56 +324,80 @@ def _score(
         dominance = 0.5
         edge = 0.0
 
-    # Confidence from dominance + edge (realistic band ~50–85)
-    confidence = 50.0 + dominance * 25.0 + edge * 20.0
-    # Soft penalty in range for candle mode (still allow a directional lean)
-    if range_mode and not enforce_range_gate:
-        confidence = float(np.clip(confidence - 6.0, 50.0, 88.0))
-    else:
-        confidence = float(np.clip(confidence, 50.0, 88.0))
+    opposing_side = "SELL" if side == "BUY" else "BUY"
+    aligned_w = _weight_for(votes, side) if side != "WAIT" else 0.0
+    opposing_w = _weight_for(votes, opposing_side)
+    core_aligned = _count_core(votes, side) if side != "WAIT" else 0
 
-    # Win probability slightly below raw confidence (honest framing)
-    win_probability = float(np.clip(confidence - 3.0 + edge * 5.0, 48.0, 82.0))
+    grade, confidence, win_probability = _grade_setup(
+        side, edge, core_aligned, aligned_w, opposing_w
+    )
 
-    if enforce_range_gate and range_mode:
-        side = "WAIT"
-        reasons = ["No trade: price is chopping between the 50/200 EMA (range mode)"]
-        reasons += [v.reason for v in votes if v.side == "NEUTRAL"][:3]
-        return side, confidence, win_probability, reasons
+    # Soft range gate: only block when trend is truly unclear
+    if enforce_range_gate and range_mode and side != "WAIT":
+        adx_vote = next((v for v in votes if v.name == "ADX"), None)
+        ema_trend_vote = next((v for v in votes if v.name == "EMA Trend"), None)
+        trend_ok = (
+            edge >= 0.14
+            and core_aligned >= 2
+            and ema_trend_vote is not None
+            and ema_trend_vote.side == side
+        )
+        adx_ok = adx_vote is not None and adx_vote.side == side and edge >= 0.12
+        if not (trend_ok or adx_ok):
+            if edge < 0.10:
+                side = "WAIT"
+                grade = "WAIT"
+                confidence = float(np.clip(50 + dominance * 15, 50, 65))
+                win_probability = confidence - 2
+                reasons = [
+                    "Range: price between 50/200 EMA — need clearer trend",
+                ]
+                reasons += [v.reason for v in votes if v.side == "NEUTRAL"][:2]
+                return side, confidence, win_probability, reasons
 
-    # Candle-mode: doji / inside-bar coil = always wait for confirmation
     trigger = next((v for v in votes if v.name == "Candle Trigger"), None)
-    if trigger is not None:
+    if trigger is not None and side != "WAIT":
         reason_l = trigger.reason.lower()
-        if "doji" in reason_l or "coiling" in reason_l:
+        if ("doji" in reason_l or "coiling" in reason_l) and edge < 0.12:
             side = "WAIT"
             reasons = [
-                "Waiting for candle confirmation (doji / inside bar coil)",
+                "Doji / coil — waiting one more candle for direction",
+                trigger.reason,
+            ]
+            reasons += [v.reason for v in votes if v.side == side][:2]
+            return side, confidence, win_probability, reasons
+        if "no trigger candle" in reason_l and edge < 0.10 and core_aligned < 3:
+            side = "WAIT"
+            reasons = [
+                "Need one more confirming candle at structure",
                 trigger.reason,
             ]
             reasons += [v.reason for v in votes if v.side != "NEUTRAL"][:2]
             return side, confidence, win_probability, reasons
-        if "no trigger candle" in reason_l and edge < 0.18:
-            side = "WAIT"
-            reasons = [
-                "Waiting for a clean candle trigger at structure",
-                trigger.reason,
-            ]
-            reasons += [v.reason for v in votes if v.side == "NEUTRAL"][:2]
-            return side, confidence, win_probability, reasons
 
-    if side == "WAIT" or confidence < settings.min_confidence_to_trade:
+    if grade == "WAIT" or side == "WAIT":
         side = "WAIT"
-        reasons = [v.reason for v in votes if v.side == "NEUTRAL"][:4]
+        reasons = [v.reason for v in votes if v.side == "NEUTRAL"][:3]
         reasons.insert(0, wait_msg)
         return side, confidence, win_probability, reasons
 
+    if confidence < settings.min_confidence_to_trade:
+        side = "WAIT"
+        reasons = [wait_msg]
+        reasons += [v.reason for v in votes if v.side != "NEUTRAL"][:2]
+        return side, confidence, win_probability, reasons
+
     reasons = [v.reason for v in votes if v.side == side]
-    opposing = [v.reason for v in votes if v.side not in (side, "NEUTRAL")]
+    opposing = [v.reason for v in votes if v.side == opposing_side]
     if opposing:
-        reasons.append(f"Caution: {opposing[0]}")
+        reasons.append(f"Watch: {opposing[0]}")
     if range_mode:
-        reasons.append("Caution: 50/200 EMA still in range — size down / confirm")
+        reasons.append("Note: 50/200 EMA still mixed — use normal size")
+    if grade == "A":
+        reasons.insert(0, f"High-confluence {side} setup (grade A)")
+    elif grade == "B":
+        reasons.insert(0, f"Solid {side} setup (grade B)")
 
     return side, confidence, win_probability, reasons
 

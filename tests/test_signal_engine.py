@@ -41,8 +41,8 @@ def test_bullish_votes_prefer_buy():
         wait_msg="Indicators are mixed — no high-conviction setup right now",
     )
     assert side in {"BUY", "SELL", "WAIT"}
-    assert 48 <= win_prob <= 88
-    assert 50 <= confidence <= 88
+    assert 48 <= win_prob <= 92
+    assert 50 <= confidence <= 92
     assert reasons
     # Strong uptrend synthetic series should lean BUY more often than SELL
     buy_w = sum(v.weight for v in votes if v.side == "BUY")

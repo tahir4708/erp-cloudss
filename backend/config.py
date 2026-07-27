@@ -5,7 +5,7 @@ from __future__ import annotations
 from pydantic_settings import BaseSettings
 
 
-# Commodities / FX-style (Yahoo for oil; gold live via Binance PAXG)
+# Commodities — Binance spot metals + futures silver; Yahoo fallbacks
 _COMMODITIES: dict[str, dict[str, object]] = {
     "XAUUSD": {
         "symbol": "GC=F",
@@ -13,8 +13,27 @@ _COMMODITIES: dict[str, dict[str, object]] = {
         "contract_size": 100.0,
         "binance": "PAXGUSDT",
         "category": "metals",
-        "name": "Gold",
-        "keywords": "gold xau paxg",
+        "name": "Gold (PAXG)",
+        "keywords": "gold xau paxg binance gold",
+    },
+    "XAUTUSD": {
+        "symbol": "XAUTUSDT",
+        "display_symbol": "XAUT/USDT",
+        "contract_size": 1.0,
+        "binance": "XAUTUSDT",
+        "category": "metals",
+        "name": "Tether Gold",
+        "keywords": "gold xaut tether binance gold",
+    },
+    "XAGUSD": {
+        "symbol": "SI=F",
+        "display_symbol": "XAG/USD",
+        "contract_size": 50.0,
+        "binance": None,
+        "binance_futures": "XAGUSDT",
+        "category": "metals",
+        "name": "Silver",
+        "keywords": "silver xag xagusdt binance futures",
     },
     "USOIL": {
         "symbol": "CL=F",
@@ -121,10 +140,26 @@ def get_instrument(key: str | None) -> dict[str, object]:
 
 
 def binance_symbol(key: str | None) -> str | None:
-    """Return Binance pair for live chart / aligned analysis, if any."""
+    """Return Binance spot pair for live chart / aligned analysis, if any."""
     inst = get_instrument(key)
     bn = inst.get("binance")
     return str(bn) if bn else None
+
+
+def binance_futures_symbol(key: str | None) -> str | None:
+    """Return Binance USDT-margined futures symbol (e.g. XAGUSDT silver perp)."""
+    inst = get_instrument(key)
+    bf = inst.get("binance_futures")
+    return str(bf) if bf else None
+
+
+def binance_market_type(key: str | None) -> str | None:
+    """spot | futures — which Binance book feeds this instrument."""
+    if binance_symbol(key):
+        return "spot"
+    if binance_futures_symbol(key):
+        return "futures"
+    return None
 
 
 def is_known_instrument(key: str | None) -> bool:
@@ -163,8 +198,10 @@ class Settings(BaseSettings):
     max_sl_atr_mult: float = 1.5
     min_rr: float = 2.0
 
-    min_confidence_to_trade: float = 55.0
-    high_confidence: float = 75.0
+    min_confidence_to_trade: float = 52.0
+    min_edge_to_trade: float = 0.08
+    high_confidence: float = 78.0
+    target_win_probability: float = 90.0
 
     model_config = {"env_prefix": "XAU_"}
 

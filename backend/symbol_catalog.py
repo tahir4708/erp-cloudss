@@ -18,6 +18,7 @@ _EXNESS_MARKETS: list[tuple[str, str, str, str]] = [
     ("BTCUSDm", "BTC/USD", "Bitcoin", "BTCUSD"),
     ("ETHUSDm", "ETH/USD", "Ethereum", "ETHUSD"),
     ("XAUUSDm", "XAU/USD", "Gold", "XAUUSD"),
+    ("XAGUSDm", "XAG/USD", "Silver", "XAGUSD"),
     ("SOLUSDm", "SOL/USD", "Solana", "SOLUSD"),
     ("XRPUSDm", "XRP/USD", "XRP", "XRPUSD"),
     ("LTCUSDm", "LTC/USD", "Litecoin", "LTCUSD"),
@@ -33,6 +34,7 @@ _EXNESS_MARKETS: list[tuple[str, str, str, str]] = [
 _YAHOO_MARKETS: list[tuple[str, str, str, str, str]] = [
     # yahoo_symbol, label, name, base_key, category
     ("GC=F", "XAU/USD", "Gold Futures", "XAUUSD", "metals"),
+    ("SI=F", "XAG/USD", "Silver Futures", "XAGUSD", "metals"),
     ("CL=F", "USOIL", "Crude Oil WTI", "USOIL", "energy"),
 ]
 
@@ -128,23 +130,37 @@ def build_symbol_catalog() -> list[MarketSymbol]:
     """All markets grouped by venue — TradingView style."""
     rows: dict[str, MarketSymbol] = {}
 
-    # Binance — curated + full USDT universe
+    # Binance — curated spot + futures metals
     for key, cfg in INSTRUMENTS.items():
         bn = cfg.get("binance")
-        if not bn:
-            continue
-        sym = MarketSymbol(
-            id=make_symbol_id("BINANCE", str(bn)),
-            venue="BINANCE",
-            symbol=str(bn),
-            label=str(cfg["display_symbol"]),
-            name=str(cfg.get("name") or key),
-            category=str(cfg.get("category") or "crypto"),
-            base_key=key,
-            live=True,
-            keywords=f"binance {bn} {key} {cfg.get('keywords', '')}".lower(),
-        )
-        rows[sym.id] = sym
+        bf = cfg.get("binance_futures")
+        if bn:
+            sym = MarketSymbol(
+                id=make_symbol_id("BINANCE", str(bn)),
+                venue="BINANCE",
+                symbol=str(bn),
+                label=str(cfg["display_symbol"]),
+                name=str(cfg.get("name") or key),
+                category=str(cfg.get("category") or "crypto"),
+                base_key=key,
+                live=True,
+                keywords=f"binance {bn} {key} {cfg.get('keywords', '')}".lower(),
+            )
+            rows[sym.id] = sym
+        if bf:
+            fut_label = str(cfg["display_symbol"])
+            sid = make_symbol_id("BINANCE", str(bf))
+            rows[sid] = MarketSymbol(
+                id=sid,
+                venue="BINANCE",
+                symbol=str(bf),
+                label=fut_label,
+                name=f"{cfg.get('name') or key} Futures",
+                category=str(cfg.get("category") or "crypto"),
+                base_key=key,
+                live=True,
+                keywords=f"binance futures {bf} {key} {cfg.get('keywords', '')}".lower(),
+            )
 
     try:
         from backend.live_feed import fetch_binance_usdt_markets
@@ -179,9 +195,13 @@ def build_symbol_catalog() -> list[MarketSymbol]:
             category="metals" if base_key == "XAUUSD" else "crypto",
             base_key=base_key,
             live=True,
-            keywords=f"exness {ex_sym} {name} {base_key} broker cfd gold xau xauusd exness gold exness xauusd".lower()
-            if base_key == "XAUUSD"
-            else f"exness {ex_sym} {name} {base_key} broker cfd".lower(),
+            keywords=(
+                f"exness {ex_sym} {name} {base_key} broker cfd gold xau xauusd exness gold exness xauusd".lower()
+                if base_key == "XAUUSD"
+                else f"exness {ex_sym} {name} {base_key} broker cfd silver xag xagusd".lower()
+                if base_key == "XAGUSD"
+                else f"exness {ex_sym} {name} {base_key} broker cfd".lower()
+            ),
         )
 
     # Yahoo commodities
@@ -212,12 +232,15 @@ def search_symbols(query: str | None = None, limit: int = 120) -> list[dict[str,
     needle = (query or "").strip().lower()
     popular = {
         "BINANCE:BTCUSDT",
-        "EXNESS:BTCUSDm",
         "BINANCE:ETHUSDT",
-        "EXNESS:ETHUSDm",
         "BINANCE:PAXGUSDT",
+        "BINANCE:XAUTUSDT",
+        "BINANCE:XAGUSDT",
         "EXNESS:XAUUSDm",
+        "EXNESS:XAGUSDm",
+        "EXNESS:BTCUSDm",
         "YAHOO:GC=F",
+        "YAHOO:SI=F",
     }
     if not needle:
         head = [r for r in catalog if r.id in popular]
